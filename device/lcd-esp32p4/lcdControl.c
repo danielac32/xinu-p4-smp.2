@@ -31,6 +31,8 @@ devcall lcdControl(device *devptr, int func, long arg1, long arg2)
     const struct lcd_pixel *pixel;
     const struct lcd_text *text;
     const struct lcd_blit *blit;
+    const struct lcd_line *line;
+    const struct lcd_circle *circle;
 
     (void)arg2;
 
@@ -109,6 +111,61 @@ devcall lcdControl(device *devptr, int func, long arg1, long arg2)
          * acumulando desde el primer printf del kernel.  Bajo el lock del
          * panel para que ningun dibujo se intercalle con el repintado. */
         lcdConsolePaint();
+        break;
+
+    case LCD_CTRL_LINE:
+        /* Bresenham: pocos pixeles, se hace bajo el lock del panel. */
+        line = (const struct lcd_line *)arg1;
+        if (line == NULL) { unlock(lcdptr->lock); return SYSERR; }
+        {
+            int x0 = line->x1, y0 = line->y1;
+            int x1 = line->x2, y1 = line->y2;
+            int dx = x1 - x0, dy = y1 - y0;
+            int sx = dx >= 0 ? 1 : -1, sy = dy >= 0 ? 1 : -1;
+            int err = (dx >= 0 ? dx : -dx) - (dy >= 0 ? dy : -dy);
+            for (;;)
+            {
+                lcdPanelPixel(x0, y0, line->color);
+                if (x0 == x1 && y0 == y1) break;
+                {
+                    int e2 = err * 2;
+                    if (e2 > -(dy >= 0 ? dy : -dy)) { err -= (dy >= 0 ? dy : -dy); x0 += sx; }
+                    if (e2 <  (dx >= 0 ? dx : -dx)) { err += (dx >= 0 ? dx : -dx); y0 += sy; }
+                }
+            }
+        }
+        break;
+
+    case LCD_CTRL_CIRCLE:
+        /* Circunferencia (o disco) con ecuacion de punto medio. */
+        circle = (const struct lcd_circle *)arg1;
+        if (circle == NULL) { unlock(lcdptr->lock); return SYSERR; }
+        {
+            int cx = circle->cx, cy = circle->cy, r = circle->r;
+            int x = r, y = 0, err = 0;
+            while (y <= x)
+            {
+                if (circle->fill)
+                {
+                    lcdPanelFillRect(cx - x, cy + y, 2 * x + 1, 1, circle->color);
+                    lcdPanelFillRect(cx - x, cy - y, 2 * x + 1, 1, circle->color);
+                }
+                else
+                {
+                    lcdPanelPixel(cx + x, cy + y, circle->color);
+                    lcdPanelPixel(cx + y, cy + x, circle->color);
+                    lcdPanelPixel(cx - y, cy + x, circle->color);
+                    lcdPanelPixel(cx - x, cy + y, circle->color);
+                    lcdPanelPixel(cx - x, cy - y, circle->color);
+                    lcdPanelPixel(cx - y, cy - x, circle->color);
+                    lcdPanelPixel(cx + y, cy - x, circle->color);
+                    lcdPanelPixel(cx + x, cy - y, circle->color);
+                }
+                y++;
+                err += 1 + 2 * y;
+                if (2 * (err - x) + 1 > 0) { x--; err += 1 - 2 * x; }
+            }
+        }
         break;
 
     case LCD_CTRL_ORIENT:

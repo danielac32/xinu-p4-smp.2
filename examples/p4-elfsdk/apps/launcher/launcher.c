@@ -1,18 +1,10 @@
 /**
  * @file launcher.c
  *
- * Lanzador y gestor de aplicaciones.  Descubre las apps instaladas escaneando
- * /apps/<carpeta>/app.txt en la SD (cada app en su carpeta con app.elf, icon.jpg
- * y app.txt).  La pantalla de inicio muestra solo el icono (dibujo alusivo) de
- * cada app; al tocarlo crea una tarea que ejecuta el ELF (create + elf_run).
- *
- * Con un gesto de abajo hacia arriba en una app, la app se oculta y pasa a
- * segundo plano.  Con un gesto de abajo hacia arriba en el launcher se abre el
- * conmutador de apps activas (tap retoma, X cierra cooperativamente).
- *
- *   elf /apps/launcher/app.elf
- *
- * Estado en PSRAM, sin estaticas escribibles.  LVGL lo bombea 'lvglui'.
+ * FASE 3 -- Launcher profesional sobre gfx/ui (sin LVGL).
+ * Grid de iconos vectoriales, barra de estado (WiFi rojo/verde, IP, bateria),
+ * paginacion con swipe <-/->, conmutador de apps con swipe ^, y salir del
+ * conmutador con swipe v.  Un hilo por app via appmgr + elf_run.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,86 +14,63 @@
 #include <device.h>
 #include <timer.h>
 #include <memory.h>
-#include <lvgl.h>
+#include <gfx.h>
 #include <elfload.h>
 #include <appmgr.h>
 #include <fat_filelib.h>
 #include "gestos.h"
-#include "estado.h"
+#include "ui.h"
 
 void exit(int codigo);
 
-/* Una app descubierta en /apps/. */
-#define MAX_APPS    12
-#define APPS_PER_PAGE 6
+#define MAX_APPS     12
+#define PER_PAGE     6
 #define APP_NAMELEN 32
 #define APP_PATHLEN 80
-#define APP_ICONLEN 96
 
-#define ICON_W 96
-#define ICON_H 96
-#define ICON565_SIZE (ICON_W * ICON_H * 2)
+#define P_HOME   0
+#define P_SWITCH 1
+
+#define RUN_STK     16384
+#define VIGIA_STK   8192
+#define VIGIA_MS    200
 
 struct app_info
 {
     char   name[APP_NAMELEN];
     char   dir[APP_NAMELEN];
     char   exec[APP_PATHLEN];
-    char   icon[APP_ICONLEN]; /* ruta LVGL fallback, ej. S:/apps/x/icon.jpg */
     uint32 color;
-    int    used;
-    uint8_t *px;               /* RGB565 cache en PSRAM (ICON565_SIZE) */
-    lv_img_dsc_t dsc;          /* descriptor LVGL apuntando a px */
+    int    kind;               /* icono vectorial */
 };
-
-#define P_HOME    0
-#define P_SWITCH  1
-
-#define ID_APP      100   /* 100 + indice */
-#define ID_RESUME   200   /* 200 + slot */
-#define ID_CLOSE    300   /* 300 + slot */
-#define ID_BACK     400
-
-#define VIGIA_STK   8192
-#define VIGIA_MS    200
-#define SCREEN_FILE "/screen.txt"
-#define SCREEN_DEFAULT_MIN 2
-#define RUN_STK     16384
-
-#define C_FONDO  0x1B1408
-#define C_TEXTO  0xE8D8B0
-#define C_HINT   0x6E5A3A
-#define C_CARD   0x2A1E10
 
 struct launcher
 {
     ui_input_t *g;
-    statusbar_t *e;
-    lv_obj_t *chip;
-    lv_obj_t *hint;
+    ui_status_t *status;
     struct app_info apps[MAX_APPS];
     int napp;
-    int page;           /* pagina horizontal del home */
-    int pagina;         /* P_HOME / P_SWITCH */
-    int oculto;         /* UI oculta (hay app en frente) */
+    int page;
+    int pagina;
+    int oculto;
     int cerrar;
-    int screen_ms;
     tid_typ vig_tid;
 };
 
-/* --- utilidades de texto --- */
+/* Paleta de colores de app (RGB565).  Aqui es constante de solo lectura,
+ * el compilador la pone en .rodata (no es estatica escribible). */
+static const unsigned app_colors[12] = {
+    0x4C66, 0xF986, 0x9B3F, 0xFD20, 0x5ACF, 0xE2BF,
+    0x34DF, 0x07EF, 0xE8A2, 0x2D7F, 0x4A6F, 0x8A24
+};
 
 static void recorta(char *s)
 {
-    char *p = s;
-    char *f;
+    char *p = s, *f;
     while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
     if (p != s) memmove(s, p, strlen(p) + 1);
     f = s + strlen(s);
-    while (f > s && (f[-1] == ' ' || f[-1] == '\t' || f[-1] == '\r' || f[-1] == '\n'))
-    {
-        f--;
-    }
+    while (f > s && (f[-1] == ' ' || f[-1] == '\t' || f[-1] == '\r' || f[-1] == '\n')) f--;
     *f = '\0';
 }
 
@@ -113,25 +82,37 @@ static uint32 parse_color(const char *s)
     while (*s)
     {
         c = *s++;
-        if (c >= '0' && c <= '9') v = (v << 4) | (uint32)(c - '0');
-        else if (c >= 'a' && c <= 'f') v = (v << 4) | (uint32)(c - 'a' + 10);
-        else if (c >= 'A' && c <= 'F') v = (v << 4) | (uint32)(c - 'A' + 10);
+        if (c >= '0' && c <= '9') v = (v << 4) | (c - '0');
+        else if (c >= 'a' && c <= 'f') v = (v << 4) | (c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') v = (v << 4) | (c - 'A' + 10);
         else break;
     }
     return v;
 }
 
-/* Lee /apps/<dir>/app.txt y rellena info. Devuelve 1 si es valida. */
-static int leer_app(const char *dir, struct app_info *ai)
+static int icon_kind(const char *name)
 {
-    char path[96];
-    char buf[384];
+    if (strstr(name, "calc")) return 0;
+    if (strstr(name, "tictac") || strstr(name, "tres")) return 1;
+    if (strstr(name, "tetris")) return 2;
+    if (strstr(name, "archiv") || strstr(name, "file")) return 3;
+    if (strstr(name, "set") || strstr(name, "ajust")) return 4;
+    if (strstr(name, "music") || strstr(name, "audio")) return 5;
+    if (strstr(name, "tarea") || strstr(name, "monitor")) return 6;
+    if (strstr(name, "info")) return 7;
+    if (strstr(name, "photo") || strstr(name, "foto")) return 8;
+    return 9;
+}
+
+static int leer_app(const char *dir, struct app_info *ai, int idx)
+{
+    char path[96], buf[384], *p;
     void *f;
-    int n, i, lin;
-    char *p;
+    int n, lin;
 
     memset(ai, 0, sizeof(*ai));
-    ai->color = C_CARD;
+    ai->color = app_colors[idx % 12];
+    ai->kind = 9;
     snprintf(path, sizeof(path), "/apps/%s/app.txt", dir);
     f = fl_fopen(path, "r");
     if (NULL == f) return 0;
@@ -140,12 +121,10 @@ static int leer_app(const char *dir, struct app_info *ai)
     if (n <= 0) return 0;
     buf[n] = '\0';
 
-    /* Parseo linea a linea: clave=valor */
     p = buf;
     for (lin = 0; lin < 32 && *p; lin++)
     {
-        char *eol = p;
-        char *eq;
+        char *eol = p, *eq;
         while (*eol && *eol != '\n' && *eol != '\r') eol++;
         if (*eol) { *eol = '\0'; eol++; }
         while (*eol == '\r' || *eol == '\n') eol++;
@@ -155,301 +134,171 @@ static int leer_app(const char *dir, struct app_info *ai)
         while (*eq && *eq != '=') eq++;
         if (*eq == '=')
         {
-            *eq = '\0';
-            recorta(p);
-            recorta(eq + 1);
-            if (0 == strcmp(p, "name"))
-                strncpy(ai->name, eq + 1, APP_NAMELEN - 1);
-            else if (0 == strcmp(p, "exec"))
-                strncpy(ai->exec, eq + 1, APP_PATHLEN - 1);
-            else if (0 == strcmp(p, "icon"))
-                strncpy(ai->icon, eq + 1, APP_ICONLEN - 1);
-            else if (0 == strcmp(p, "color"))
-                ai->color = parse_color(eq + 1);
+            *eq = '\0'; recorta(p); recorta(eq + 1);
+            if (0 == strcmp(p, "name")) strncpy(ai->name, eq + 1, APP_NAMELEN - 1);
+            else if (0 == strcmp(p, "exec")) strncpy(ai->exec, eq + 1, APP_PATHLEN - 1);
+            else if (0 == strcmp(p, "color")) ai->color = parse_color(eq + 1);
         }
         p = eol;
     }
-
     strncpy(ai->dir, dir, APP_NAMELEN - 1);
     if (ai->name[0] == '\0') strncpy(ai->name, dir, APP_NAMELEN - 1);
     if (ai->exec[0] == '\0') snprintf(ai->exec, sizeof(ai->exec), "/apps/%s/app.elf", dir);
-    ai->used = 1;
-    (void)i;
+    ai->kind = icon_kind(ai->name);
     return 1;
 }
 
-static int load_icon565(struct app_info *ai)
-{
-    char path[96];
-    void *f;
-    int n;
-
-    if (NULL == ai || ai->dir[0] == '\0') return 0;
-    if (ai->dsc.data != NULL) return 1;
-    if (ai->px == (uint8_t *)-1) return 0; /* ya intento y fallo */
-
-    snprintf(path, sizeof(path), "/apps/%s/icon565.bin", ai->dir);
-    f = fl_fopen(path, "r");
-    if (NULL == f) { ai->px = (uint8_t *)-1; return 0; }
-    ai->px = (uint8_t *)psram_malloc(ICON565_SIZE);
-    if (NULL == ai->px) { fl_fclose(f); ai->px = (uint8_t *)-1; return 0; }
-    n = fl_fread(ai->px, 1, ICON565_SIZE, f);
-    fl_fclose(f);
-    if (n != ICON565_SIZE) { psram_free(ai->px); ai->px = (uint8_t *)-1; return 0; }
-
-    memset(&ai->dsc, 0, sizeof(ai->dsc));
-    ai->dsc.header.always_zero = 0;
-    ai->dsc.header.w = ICON_W;
-    ai->dsc.header.h = ICON_H;
-    ai->dsc.header.cf = LV_IMG_CF_TRUE_COLOR;
-    ai->dsc.data_size = ICON565_SIZE;
-    ai->dsc.data = ai->px;
-    return 1;
-}
-
-static void free_app_icons(struct launcher *l)
-{
-    int i;
-    for (i = 0; i < MAX_APPS; i++)
-        if (l->apps[i].px != NULL && l->apps[i].px != (uint8_t *)-1)
-            psram_free(l->apps[i].px);
-}
-
-/* Escanea /apps/ y carga el catalogo. */
 static void scan_apps(struct launcher *l)
 {
     FL_DIR d;
     fl_dirent e;
-
-    free_app_icons(l);
     l->napp = 0;
     memset(l->apps, 0, sizeof(l->apps));
-    if (NULL == fl_opendir("/apps", &d))
-    {
-        return;
-    }
+    if (NULL == fl_opendir("/apps", &d)) return;
     while (0 == fl_readdir(&d, &e))
     {
-        if (e.filename[0] == '.') continue;
-        if (!e.is_dir) continue;
-        /* El launcher vive en /apps/ pero no es una app gestionada. */
+        if (e.filename[0] == '.' || !e.is_dir) continue;
         if (0 == strcmp(e.filename, "launcher")) continue;
         if (l->napp >= MAX_APPS) break;
-        if (leer_app(e.filename, &l->apps[l->napp]))
-        {
-            l->napp++;
-        }
+        if (leer_app(e.filename, &l->apps[l->napp], l->napp)) l->napp++;
     }
     fl_closedir(&d);
 }
 
-/* Hebra que ejecuta un ELF. */
 static int app_runner(char *path)
 {
     int r = elf_run(path, 0, NULL);
     if (SYSERR == r)
     {
         int slot = appmgr_find_path(path);
-        if (slot >= 0)
-        {
-            appmgr_unregister(slot);
-        }
+        if (slot >= 0) appmgr_unregister(slot);
     }
     return 0;
-}
-
-/* Chip label removed by design; keep no-op to preserve call sites. */
-static void chip_set(struct launcher *l, const char *txt)
-{
-    (void)l; (void)txt;
-}
-
-static void hint_set(struct launcher *l, const char *txt)
-{
-    if (NULL == l->hint) return;
-    lvgl_lock();
-    lv_label_set_text(l->hint, txt);
-    lvgl_unlock();
-}
-
-static int hay_app_running(void)
-{
-    int i, n = appmgr_count();
-    struct app_entry *t = appmgr_table();
-    for (i = 0; i < n; i++)
-    {
-        if (APP_RUNNING == t[i].state) return 1;
-    }
-    return 0;
-}
-
-static void ocultar_ui(struct launcher *l)
-{
-    if (l->oculto) return;
-    /* Descarta eventos pendientes para no procesarlos al recuperar el foco. */
-    ui_clear_events(l->g);
-    ui_show(l->g, 0);
-    l->oculto = 1;
-}
-
-static void mostrar_ui(struct launcher *l)
-{
-    if (!l->oculto) return;
-    ui_show(l->g, 1);
-    /* Descarta toques/botones residuales acumulados mientras estaba oculta. */
-    ui_clear_events(l->g);
-    l->oculto = 0;
 }
 
 static void lanzar_app(struct launcher *l, int idx)
 {
-    int slot;
-    tid_typ tid;
+    int slot, tid;
     struct app_info *ai;
 
     if (idx < 0 || idx >= l->napp) return;
     ai = &l->apps[idx];
-
     slot = appmgr_find_path(ai->exec);
     if (slot >= 0)
     {
         int st = appmgr_get_state(slot);
-        if (APP_CLOSING == st) { chip_set(l, "closing..."); return; }
+        if (APP_CLOSING == st) return;
         if (APP_BACKGROUND == st || APP_RUNNING == st)
         {
             appmgr_take_foreground(slot);
-            ocultar_ui(l);
-            chip_set(l, ai->name);
             return;
         }
         appmgr_unregister(slot);
     }
-
-    chip_set(l, ai->name);
-    tid = create((void *)app_runner, RUN_STK, getprio(gettid()),ai->name, 1, (long)ai->exec);
+    tid = create((void *)app_runner, RUN_STK, getprio(gettid()), ai->name, 1,
+                 (long)ai->exec);
     if (SYSERR != tid)
     {
         appmgr_register(ai->name, ai->exec, ai->color, tid);
         appmgr_take_foreground(appmgr_find_path(ai->exec));
-        ocultar_ui(l);
         ready(tid, RESCHED_NO);
     }
-    else
-    {
-        mostrar_ui(l);
-        chip_set(l, "no memory/task");
-    }
-}
-
-/* Boton de icono: tarjeta ui_button sin texto + lv_img centrada.
- * Prefiere icon565.bin precacheado en PSRAM (carga rapida) y cae a icon (SJPG). */
-static void boton_icono(struct launcher *l, int id, struct app_info *ai,
-                        int x, int y, int w, int h)
-{
-    lv_obj_t *btn = ui_button(l->g, id, "", x, y, w, h, ai->color);
-    if (NULL == btn) return;
-    load_icon565(ai); /* FAT I/O fuera de lvgl_lock */
-    lvgl_lock();
-    /* Quitar el rotulo de texto (unico hijo) para mostrar solo el dibujo. */
-    if (lv_obj_get_child_cnt(btn) > 0)
-    {
-        lv_obj_del(lv_obj_get_child(btn, 0));
-    }
-    if (ai->dsc.data != NULL || ai->icon[0] != '\0')
-    {
-        lv_obj_t *img = lv_img_create(btn);
-        if (ai->dsc.data != NULL) lv_img_set_src(img, &ai->dsc);
-        else                       lv_img_set_src(img, ai->icon);
-        lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_center(img);
-    }
-    lvgl_unlock();
 }
 
 static void home_draw(struct launcher *l)
 {
     int i, col, row, x, y, base, pages;
-    char h[24];
+    char h[32];
 
-    ui_buttons_clear(l->g);
-    pages = (l->napp + APPS_PER_PAGE - 1) / APPS_PER_PAGE;
+    ui_fill(UI_BG);
+    ui_status_draw(l->status);
+    ui_text("Aplicaciones", 12, 54, UI_TEXT, UI_BG);
+
+    pages = (l->napp + PER_PAGE - 1) / PER_PAGE;
     if (pages < 1) pages = 1;
     if (l->page >= pages) l->page = pages - 1;
     if (l->page < 0) l->page = 0;
-    base = l->page * APPS_PER_PAGE;
-    for (i = 0; i < APPS_PER_PAGE && (base + i) < l->napp; i++)
+    base = l->page * PER_PAGE;
+
+    for (i = 0; i < PER_PAGE && (base + i) < l->napp; i++)
     {
         col = i % 2; row = i / 2;
-        x = 11 + col * 153; y = 106 + row * 108;
-        boton_icono(l, ID_APP + base + i, &l->apps[base + i], x, y, 145, 100);
+        x = 14 + col * 152; y = 92 + row * 120;
+        ui_shadow(x, y, 132, 104, 8);
+        ui_rrect(x, y, 132, 104, 8, UI_SURFACE);
+        ui_rrect(x + 9, y + 7, 54, 54, 8, l->apps[base + i].color);
+        ui_icon(l->apps[base + i].kind, x + 9, y + 7, 54, 54, UI_TEXT);
+        ui_text(l->apps[base + i].name, x + 7, y + 70, UI_TEXT, UI_SURFACE);
     }
-    if (0 == l->napp) hint_set(l, "no apps in /apps");
-    else if (pages > 1) { snprintf(h, sizeof(h), "< %d/%d >", l->page + 1, pages); hint_set(l, h); }
-    else hint_set(l, "");
+
+    if (0 == l->napp)
+        ui_text("No hay apps en /apps", 20, 200, UI_TEXT_DIM, UI_BG);
+
+    /* paginacion */
+    if (pages > 1)
+    {
+        snprintf(h, sizeof(h), "< %d / %d >", l->page + 1, pages);
+        ui_text_center(h, GFX_W / 2, 452, UI_TEXT_DIM, UI_BG);
+    }
+    else ui_text_center("swipe ^ recientes", GFX_W / 2, 452, UI_TEXT_DIM, UI_BG);
+
+    /* pistas de gestos: SOLO texto, sin franja (no solapa la paginacion) */
+    ui_text_center("< / > paginas   |   ^ recientes", GFX_W / 2, 470,
+                   UI_TEXT_DIM, UI_BG);
+}
+
+static void switch_draw(struct launcher *l)
+{
+    struct app_entry *t = appmgr_table();
+    int n = appmgr_count(), i, y = 92, activos = 0;
+    char label[40];
+
+    ui_fill(UI_BG);
+    ui_status_draw(l->status);
+    ui_text("Recientes", 12, 54, UI_TEXT, UI_BG);
+    for (i = 0; i < n; i++)
+    {
+        int color;
+        if (APP_FREE == t[i].state) continue;
+        activos++;
+        color = t[i].color ? t[i].color : UI_SURFACE2;
+        ui_shadow(10, y, 300, 52, 6);
+        ui_rrect(10, y, 300, 52, 6, UI_SURFACE);
+        /* Miniatura: icono vectorial de la app dentro de su color */
+        ui_rrect(14, y + 6, 40, 40, 5, color);
+        ui_icon(icon_kind(t[i].name), 14, y + 6, 40, 40, UI_TEXT);
+        if (APP_BACKGROUND == t[i].state)
+            snprintf(label, sizeof(label), "%s · bg", t[i].name);
+        else
+            snprintf(label, sizeof(label), "%s", t[i].name);
+        ui_text(label, 62, y + 10, UI_TEXT, UI_SURFACE);
+        ui_text("Toca para reanudar", 62, y + 30, UI_TEXT_DIM, UI_SURFACE);
+        /* Boton X para MATAR la app (appmgr_request_close) */
+        ui_rrect(272, y + 10, 30, 30, 5, UI_RED);
+        ui_text_center("X", 287, y + 16, UI_TEXT, UI_RED);
+        y += 60;
+        if (y > 430) break;
+    }
+    if (0 == activos) ui_text("Sin apps activas", 20, 200, UI_TEXT_DIM, UI_BG);
+    ui_text_center("^ inicio   |   v salir", GFX_W / 2, 465, UI_TEXT_DIM, UI_BG);
 }
 
 static void pantalla_home(struct launcher *l)
 {
     l->pagina = P_HOME;
     l->page = 0;
-    /* SMP: borrar primero los lv_img (bajo lvgl_lock dentro de
-     * ui_buttons_clear) y solo despues scan_apps(), que llama a
-     * free_app_icons(): si se liberan los pixeles antes de que LVGL suelte
-     * las imagenes que los referencian, lvglui (core0) puede renderizar
-     * memoria ya liberada. */
     ui_buttons_clear(l->g);
     scan_apps(l);
-    chip_set(l, "Launcher");
     home_draw(l);
-    /* Evita que un evento viejo dispare un boton recien creado. */
-    ui_clear_events(l->g);
-}
-
-static void pantalla_switch(struct launcher *l)
-{
-    int i, n, y, activos;
-    struct app_entry *t;
-    char label[48];
-
-    l->pagina = P_SWITCH;
-    ui_buttons_clear(l->g);
-    chip_set(l, "Apps");
-    hint_set(l, "");
-
-    t = appmgr_table();
-    n = appmgr_count();
-    y = 106;
-    activos = 0;
-    for (i = 0; i < n; i++)
-    {
-        if (APP_FREE == t[i].state) continue;
-        activos++;
-        if (APP_BACKGROUND == t[i].state)
-            snprintf(label, sizeof(label), "%s (bg)", t[i].name);
-        else if (APP_CLOSING == t[i].state)
-            snprintf(label, sizeof(label), "%s (closing)", t[i].name);
-        else
-            snprintf(label, sizeof(label), "%s", t[i].name);
-        ui_button(l->g, ID_RESUME + i, label, 11, y, 245, 52,
-                     t[i].color ? t[i].color : C_CARD);
-        ui_button(l->g, ID_CLOSE + i, "X", 264, y, 45, 52, 0xC0392B);
-        y += 60;
-        if (y > 400) break;
-    }
-    if (0 == activos) chip_set(l, "no active apps");
-    /* Evita que un evento viejo actue sobre el conmutador recien pintado. */
     ui_clear_events(l->g);
 }
 
 static void mostrar_switch(struct launcher *l)
 {
-    int i, n = appmgr_count();
-    struct app_entry *t = appmgr_table();
-    for (i = 0; i < n; i++)
-    {
-        if (APP_FREE != t[i].state) { pantalla_switch(l); return; }
-    }
-    chip_set(l, "no active apps");
+    l->pagina = P_SWITCH;
+    ui_buttons_clear(l->g);
+    switch_draw(l);
+    ui_clear_events(l->g);
 }
 
 static void procesar(struct launcher *l, ui_event_t *ev)
@@ -464,79 +313,68 @@ static void procesar(struct launcher *l, ui_event_t *ev)
         }
         else
         {
-            /* Switcher: swipe up returns to home. */
             if (UI_DIR_UP == ev->dir) pantalla_home(l);
+            else if (UI_DIR_DOWN == ev->dir)
+            {
+                /* salir del conmutador: cerrar todas las apps activas */
+                struct app_entry *t = appmgr_table();
+                int n = appmgr_count(), i;
+                for (i = 0; i < n; i++)
+                    if (APP_FREE != t[i].state) appmgr_request_close(i);
+                pantalla_home(l);
+            }
         }
         return;
     }
-    if (UI_EVENT_BUTTON != ev->tipo) return;
-
-    if (ev->id >= ID_APP && ev->id < ID_APP + l->napp)
+    if (UI_EVENT_BUTTON == ev->tipo)
     {
-        lanzar_app(l, ev->id - ID_APP);
-        return;
-    }
-    if (ev->id >= ID_RESUME && ev->id < ID_RESUME + APPMGR_MAX)
-    {
-        int slot = ev->id - ID_RESUME;
-        if (appmgr_get_state(slot) != APP_FREE &&
-            appmgr_get_state(slot) != APP_CLOSING)
+        if (P_HOME == l->pagina)
         {
-            appmgr_take_foreground(slot);
-            ocultar_ui(l);
+            int base = l->page * PER_PAGE, col, row;
+            for (row = 0; row < 3; row++)
+                for (col = 0; col < 2; col++)
+                {
+                    int idx = base + row * 2 + col;
+                    int x, y;
+                    if (idx >= l->napp) continue;
+                    x = 14 + col * 152; y = 92 + row * 120;
+                    if (ev->x1 >= x && ev->x1 < x + 132 &&
+                        ev->y1 >= y && ev->y1 < y + 104)
+                    { lanzar_app(l, idx); return; }
+                }
         }
-        return;
-    }
-    if (ev->id >= ID_CLOSE && ev->id < ID_CLOSE + APPMGR_MAX)
-    {
-        int slot = ev->id - ID_CLOSE;
-        if (appmgr_get_state(slot) != APP_FREE)
+        else
         {
-            appmgr_request_close(slot);
-            pantalla_switch(l);
+            struct app_entry *t = appmgr_table();
+            int n = appmgr_count(), i, y = 92;
+            for (i = 0; i < n; i++)
+            {
+                if (APP_FREE == t[i].state) continue;
+                if (ev->y1 >= y && ev->y1 < y + 52)
+                {
+                    if (ev->x1 >= 272) appmgr_request_close(i);
+                    else appmgr_take_foreground(i);
+                    switch_draw(l);
+                    return;
+                }
+                y += 60;
+            }
         }
-        return;
     }
 }
 
-static int read_screen_ms(void)
+static int hay_app_running(void)
 {
-    void *f;
-    char buf[16];
-    int n, mins = SCREEN_DEFAULT_MIN;
-    int i = 0, v = 0;
-
-    f = fl_fopen(SCREEN_FILE, "r");
-    if (NULL != f)
-    {
-        n = fl_fread(buf, 1, (int)sizeof(buf) - 1, f);
-        fl_fclose(f);
-        if (n > 0)
-        {
-            buf[n] = '\0';
-            while (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '\r' || buf[i] == '\n') i++;
-            while (buf[i] >= '0' && buf[i] <= '9') { v = v * 10 + (buf[i] - '0'); i++; }
-            if (v > 0) mins = v;
-        }
-    }
-    if (mins < 1) mins = 1;
-    if (mins > 120) mins = 120;
-    return mins * 60 * 1000;
+    int i, n = appmgr_count();
+    struct app_entry *t = appmgr_table();
+    for (i = 0; i < n; i++) if (APP_RUNNING == t[i].state) return 1;
+    return 0;
 }
 
 static void vigia(ulong arg)
 {
     struct launcher *l = (struct launcher *)arg;
-    int d;
-
-    d = (int)getdev("LVGL0");
-    if (SYSERR != d) control(d, LVGL_CTRL_IDLE, l->screen_ms, 0);
-    while (!l->cerrar)
-    {
-        if (!l->oculto && l->e != NULL) statusbar_refresh(l->e);
-        sleep(VIGIA_MS);
-    }
-    if (SYSERR != d) control(d, LVGL_CTRL_IDLE, 0, 0);
+    while (!l->cerrar) sleep(VIGIA_MS);
     send(l->vig_tid, OK);
 }
 
@@ -544,48 +382,56 @@ int main(int argc, char *argv[])
 {
     struct launcher *l;
     ui_event_t ev;
+    unsigned long t_status = 0;
 
     (void)argc; (void)argv;
-    printf("launcher: /apps manager (tid=%d)\r\n", gettid());
+    printf("launcher: UI gfx (tid=%d)\r\n", gettid());
 
     l = (struct launcher *)psram_malloc(sizeof(struct launcher));
-    if (NULL == l) { exit(1); }
+    if (NULL == l) exit(1);
     memset(l, 0, sizeof(struct launcher));
     l->vig_tid = SYSERR;
 
     l->g = ui_create_ex(UI_CHROME_NONE);
     if (NULL == l->g) { psram_free(l); exit(1); }
+    l->status = ui_status_create();
+    if (NULL == l->status) { ui_destroy(l->g); psram_free(l); exit(1); }
 
-    lvgl_lock();
-    lv_obj_set_style_bg_color(ui_root(l->g), lv_color_hex(C_FONDO), 0);
-    lv_obj_set_style_bg_grad_dir(ui_root(l->g), LV_GRAD_DIR_NONE, 0);
-    lv_obj_set_style_bg_opa(ui_root(l->g), LV_OPA_COVER, 0);
-    l->chip = NULL;
-    l->hint = lv_label_create(ui_root(l->g));
-    lv_label_set_text(l->hint, "");
-    lv_obj_set_style_text_color(l->hint, lv_color_hex(C_HINT), 0);
-    lv_obj_set_pos(l->hint, 8, 450);
-    lvgl_unlock();
-
-    l->e = statusbar_create(ui_root(l->g), 8, 8, 304);
-    l->screen_ms = read_screen_ms();
     pantalla_home(l);
-
     l->vig_tid = create_on(1, (void *)vigia, VIGIA_STK, getprio(gettid()),
-                        "launch-vig", 1, (long)l);
+                           "launch-vig", 1, (long)l);
     if (SYSERR != l->vig_tid) ready(l->vig_tid, RESCHED_NO);
 
     for (;;)
     {
-        if (!l->oculto && hay_app_running()) ocultar_ui(l);
+        if (!l->oculto && hay_app_running()) l->oculto = 1;
         if (l->oculto && !hay_app_running())
         {
-            mostrar_ui(l);
-            if (P_SWITCH == l->pagina) pantalla_switch(l);
+            /* La app paso a BACKGROUND: mostrar directamente "Recientes" con
+             * sus tarjetas y el boton X para matarla. */
+            l->oculto = 0;
+            {
+                struct app_entry *t = appmgr_table();
+                int n = appmgr_count(), i, hay_bg = 0;
+                for (i = 0; i < n; i++)
+                    if (APP_BACKGROUND == t[i].state) hay_bg = 1;
+                if (hay_bg) mostrar_switch(l);
+                else pantalla_home(l);
+            }
         }
-        while (ui_poll(l->g, &ev))
+        /* Si una app esta en primer plano, NO leer TOUCH0: si el launcher
+         * tambien sondea el panel, se queda con los eventos antes que la app
+         * y esta no responde (medido en HW). */
+        if (!l->oculto)
         {
-            if (!l->oculto) procesar(l, &ev);
+            while (ui_poll(l->g, &ev)) procesar(l, &ev);
+        }
+        /* Refrescar la barra una vez por segundo con temporizador acumulativo
+         * (millis()%1000<40 hacia parpadear el banner al repintar de golpe). */
+        if (millis() - t_status >= 1000)
+        {
+            t_status = millis();
+            if (!l->oculto) ui_status_draw(l->status);
         }
         sleep(40);
     }

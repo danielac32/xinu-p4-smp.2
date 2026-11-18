@@ -54,6 +54,8 @@
 #define LCD_CTRL_CLOCK     0x0A /**< arg1=Hz (reloj de bits en caliente) */
 #define LCD_CTRL_SYNC      0x0B /**< sin arg: pinta la rejilla del log de
                                   arranque capturada por lcdConsolePutc() */
+#define LCD_CTRL_LINE      0x0C /**< arg1=&struct lcd_line                */
+#define LCD_CTRL_CIRCLE    0x0D /**< arg1=&struct lcd_circle              */
 
 /* Portrait orientations, named after the MADCTL bits they write and
  * numbered with the rotation numbers the reference drivers (Arduino_GFX,
@@ -96,6 +98,19 @@ struct lcd_blit
 {
     int x, y, w, h;
     const uint16_t *img;
+};
+
+struct lcd_line
+{
+    int x1, y1, x2, y2;
+    uint16_t color;
+};
+
+struct lcd_circle
+{
+    int cx, cy, r;
+    uint16_t color;
+    bool fill;
 };
 
 /* Driver functions */

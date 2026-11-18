@@ -1,0 +1,13 @@
+# This Makefile contains rules to build files in the device/gfx/ directory.
+#
+# FASE 3: sustituto de LVGL.  El device gfx no posee hardware: envuelve el
+# panel LCD0 (control(LCD0, LCD_CTRL_*)) con una API de dibujo inmediato y
+# sin estado retenido.  Las apps ELF dibujan llamando a control(GFX0, ...).
+
+COMP = device/gfx
+
+C_FILES = gfxInit.c gfxControl.c
+S_FILES =
+
+DIR = ${TOPDIR}/${COMP}
+COMP_SRC += ${S_FILES:%=${DIR}/%} ${C_FILES:%=${DIR}/%}

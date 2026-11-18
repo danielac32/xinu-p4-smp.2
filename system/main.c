@@ -15,13 +15,41 @@
 #include <stdlib.h>
 #include <elfload.h>
 static void print_os_info(void);
+static thread bootPrintTask(void);
+static thread launcherTask(void);
 extern int netBootTask(void);
 
-/* FASE 1: bootTask() (splash LVGL) y launcherTask() (ELF con LVGL) se
- * desactivan:LVGL sale del kernel.  Fase 3 sustituira el splash por
- * bootPrintTask() (kprintf -> fbcon) y el lanzador por uno sobre gfx. */
+/* FASE 3: el splash LVGL se sustituye por bootPrintTask(): imprime el estado
+ * del arranque con kprintf (que el fbcon refleja en la rejilla del LCD) y
+ * termina, para que main() sepa (via receive) que ya puede pintar el log. */
+#define LAUNCHER_ELF "/apps/launcher/launcher.elf"
 
-/* FASE 1: LAUNCHER_ELF/LAUNCHER_STK se retiran con el lanzador LVGL. */
+/**
+ * Hebra de arranque: imprime el estado del kernel por kprintf.  Cada caracter
+ * cae en lcdConsolePutc() (kputc), se acumula en la rejilla y se pinta al final
+ * con LCD_CTRL_SYNC.  Termina con send al padre para que launch() espere.
+ */
+static thread bootPrintTask(void)
+{
+    extern ulong cpuid;
+    kprintf("\r\n=== arranque Xinu P4 / SMP (sin LVGL, con gfx) ===\r\n");
+    kprintf("core0/1 activos, tick preemptivo, red nativa\r\n");
+    kprintf("pantalla: fbcon verde + device GFX0\r\n");
+#ifdef DETAIL
+    kprintf("cpuid 0x%lX\r\n", cpuid);
+#endif
+    return OK;
+}
+
+/** Carga el launcher gfx desde la SD en hebra propia (elf_run usa la pila del
+ * llamador y exit()=kill(gettid()) se lleva la hebra, igual que en el original). */
+static thread launcherTask(void)
+{
+    kprintf("[launcher] elf_run %s\r\n", LAUNCHER_ELF);
+    if (SYSERR == elf_run(LAUNCHER_ELF, 0, NULL))
+        kprintf("[launcher] fallo al cargar %s\r\n", LAUNCHER_ELF);
+    return OK;
+}
 
 /**
  * Crea una hebra que TERMINA y espera su tid.  El join es receive(): al devolver,
@@ -53,24 +81,33 @@ thread main(void)
         return 0;
     }
 
-    /* FASE 1: sin splash ni launcher LVGL.  Queda la red en segundo plano y la
-     * informacion del kernel.  Fase 3 anadira: 1) bootPrintTask (esperada con
-     * launch/receive) que imprime el arranque hacia el fbcon, y 2) el launcher
-     * sobre gfx que se lanza al final. */
-
+    /* 1. Red en segundo plano (core 1), sin bloquear el arranque. */
     if (SYSERR == ready(create_on(1, netBootTask, 16 * 1024, INITPRIO,
                                    "netboot", 0), RESCHED_YES))
     {
         kprintf("WARNING: Failed to create netboot\r\n");
     }
 
+    /* 2. Tarea de arranque: imprime por kprintf (-> fbcon).  No se espera con
+     * receive(): en SMP el send de kill() no siempre despierta a main y se
+     * quedaba colgado aqui (medido en HW).  Un sleep breve le da tiempo. */
+    ready(create_on(1, bootPrintTask, 8 * 1024, INITPRIO, "bootprint", 0),
+          RESCHED_NO);
+    sleep(50);
+
     print_os_info();
 
-    /* FASE 2: volcar el log de arranque capturado por lcdConsolePutc() a la
-     * pantalla, de una sola vez, antes de que la shell tome el puerto. */
+    /* 3. Volcar el log completo al panel (fbcon verde), una sola vez. */
     control(LCD0, LCD_CTRL_SYNC, 0, 0);
 
-    /* La consola al final.  RESCHED_NO para que main() devuelva y la shell tome
+    /* 4. Launcher sobre gfx, en hebra propia, sin esperar (bucle infinito). */
+    if (SYSERR == ready(create_on(1, launcherTask, 32 * 1024, INITPRIO,
+                                   "launcher", 0), RESCHED_YES))
+    {
+        kprintf("WARNING: Failed to create launcher\r\n");
+    }
+
+    /* 5. Consola al final.  RESCHED_NO para que main() devuelva y la shell tome
      * el procesador cuando el planificador la elija. */
     if (SYSERR == ready(create(shell, INITSTK, INITPRIO, "SHELL", 3,
                                CONSOLE, CONSOLE, CONSOLE), RESCHED_NO))

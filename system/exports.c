@@ -59,6 +59,7 @@
 #include <espeth.h>               /* espethLinkIsUp                                  */
 #include <network.h>              /* netLookup / netaddrsprintf: la IP de ETH0       */
 #include <math.h>
+#include <gfx.h>                     /* FASE 3: gfxInit/gfxControl (device GFX0)   */
 #include <fat_filelib.h>            /* la API fl_* del filelib de FAT              */
 #include <mp3.h>                    /* mp3_*: el reproductor del kernel            */
 #include <elfload.h>                /* elf_run: el cargador entero                */
@@ -258,6 +259,10 @@ static const struct export exports[] = {
     { "lowpass", (void *)lowpass },
 
     /* ---------------- Panel y red ---------------- */
+    /* FASE 3: API gfx (device GFX0 sobre LCD0, sin LVGL).  Las apps dibujan
+     * con control(GFX0, GFX_CTRL_*, ...) o con estos helpers. */
+    { "gfxInit", (void *)gfxInit },
+    { "gfxControl", (void *)gfxControl },
     { "espethLinkIsUp", (void *)espethLinkIsUp },
 
     /* ---------------- Estado de red para las apps ----------------
@@ -303,6 +308,7 @@ static const struct export exports[] = {
     { "appmgr_take_foreground", (void *)appmgr_take_foreground },
     { "appmgr_set_info", (void *)appmgr_set_info },
     { "appmgr_get_info", (void *)appmgr_get_info },
+
 
     /* ---------------- Sistema de ficheros (FAT/microSD) ---------------- */
     { "fs_lock", (void *)fs_lock },

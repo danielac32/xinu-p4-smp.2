@@ -41,6 +41,11 @@ devcall lcdInit(device *devptr)
 
     lcdptr->up = TRUE;
 
+    /* Apagar de inmediato cualquier patron de test del ST7796 (el panel
+     * puede arrancar mostrando azul) rellenando de negro antes de que el
+     * fbcon pinte el log.  Evita el pantallazo azul ocasional tras el reset. */
+    lcdPanelFill(C_BLACK);
+
     /* The panel is a boot display, not a second console: live mirroring
      * stays off.  lcdConsolePutc() still records every character into the
      * grid, and the shell paints that grid once at startup (LCD_CTRL_SYNC)

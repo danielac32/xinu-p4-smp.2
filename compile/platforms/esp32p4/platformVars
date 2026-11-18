@@ -48,9 +48,6 @@ DEFS     += -DTARGET_SOC_ESP32P4
 # Ojo al orden con include/lvgl.h (el header del DEVICE lvgl): INCLUDE pone
 # primero -I$(TOPDIR)/include, asi que un `#include <lvgl.h>' es el del device,
 # y la libreria se alcanza por la ruta larga `lvgl/lvgl.h' (-I$(TOPDIR) ya
-# estaba).  El puerto esta en device/lvgl/lvglport.c.
-INCLUDE  += -I$(TOPDIR)/lvgl
-
 # The FAT file system library lives in fatfs/ and uses <fat_table.h>-style
 # includes relative to its own directory.
 INCLUDE  += -I$(TOPDIR)/fatfs
@@ -123,7 +120,7 @@ LDLIBS   +=
 #   sigue en parked/java-gui/.  Sin lvgl enlazado no hay simbolos lv_* que
 #   exportar a las apps ELF.
 # + jvm: APARCADO en parked/java-gui/ (ver su README.md).
-DEVICES  := tty uart-esp32p4 psram nam lcd-esp32p4 sdmmc-esp32p4 sdblock-esp32p4 fat gpio i2c touch power audio sdio-esp32p4 espeth-esp32p4 raw udp tcp telnet
+DEVICES  := tty uart-esp32p4 psram nam lcd-esp32p4 gfx sdmmc-esp32p4 sdblock-esp32p4 fat gpio i2c touch power audio sdio-esp32p4 espeth-esp32p4 raw udp tcp telnet
 
 # ============================================================================
 # Imágenes de arranque del P4: SBL (bootloader de 2ª etapa) y ULP (firmware
