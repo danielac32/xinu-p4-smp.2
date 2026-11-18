@@ -1,0 +1,1329 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Xinu en ESP32-P4 SMP — Documentación del Kernel</title>
+  <meta name="description" content="Documentación técnica completa del kernel Xinu portado a ESP32-P4 (baremetal, SMP): arranque, memoria, multinúcleo, ELF, drivers, LVGL y desarrollo de apps." />
+  <style>
+:root {
+  --bg: #060913;
+  --bg-2: #0b1220;
+  --panel: rgba(16, 24, 40, 0.72);
+  --panel-2: rgba(12, 18, 32, 0.9);
+  --border: rgba(86, 196, 255, 0.18);
+  --border-strong: rgba(86, 196, 255, 0.35);
+  --text: #e6f1ff;
+  --muted: #9bb0c9;
+  --accent: #39d0ff;
+  --accent-2: #8b5cf6;
+  --accent-3: #00ffa3;
+  --warn: #ffcc66;
+  --danger: #ff6b8a;
+  --ok: #4ade80;
+  --shadow: 0 10px 40px rgba(0,0,0,.45);
+  --radius: 16px;
+  --radius-sm: 10px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --sans: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--text);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(57,208,255,.12), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(139,92,246,.12), transparent 55%),
+    linear-gradient(180deg, #050812 0%, #070b16 40%, #060913 100%);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+body::before {
+  content: "";
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(rgba(57,208,255,.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(57,208,255,.04) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: radial-gradient(circle at center, black 35%, transparent 95%);
+  opacity: .35;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre, .mono { font-family: var(--mono); }
+pre {
+  background: #08101d;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  overflow: auto;
+  color: #d9e7ff;
+  line-height: 1.45;
+  font-size: 13px;
+}
+code { color: #bfe9ff; }
+.app {
+  position: relative; z-index: 1;
+  display: grid;
+  grid-template-columns: 290px 1fr;
+  min-height: 100vh;
+}
+.sidebar {
+  position: sticky; top: 0; height: 100vh;
+  padding: 22px 16px;
+  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(10,16,28,.92), rgba(8,12,22,.82));
+  backdrop-filter: blur(10px);
+  overflow: auto;
+}
+.brand {
+  display: flex; gap: 12px; align-items: center;
+  padding: 8px 10px 18px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.logo {
+  width: 42px; height: 42px; border-radius: 12px;
+  background: linear-gradient(135deg, rgba(57,208,255,.25), rgba(139,92,246,.25));
+  border: 1px solid var(--border-strong);
+  display: grid; place-items: center;
+  box-shadow: 0 0 0 1px rgba(57,208,255,.08) inset, 0 0 24px rgba(57,208,255,.12);
+  font-weight: 700; color: var(--accent);
+}
+.brand h1 { font-size: 15px; margin: 0; line-height: 1.2; }
+.brand p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+.nav-group { margin: 14px 0; }
+.nav-group-title {
+  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: #7f97b4; margin: 10px 10px 6px;
+}
+.nav a {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 10px; margin: 2px 0;
+  border-radius: 10px; color: var(--muted);
+  border: 1px solid transparent;
+  transition: .18s ease;
+  font-size: 14px;
+}
+.nav a:hover { color: var(--text); background: rgba(57,208,255,.06); border-color: rgba(57,208,255,.12); text-decoration: none; }
+.nav a.active {
+  color: #fff; background: linear-gradient(90deg, rgba(57,208,255,.14), rgba(139,92,246,.10));
+  border-color: var(--border-strong);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.nav .dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(57,208,255,.35); }
+.nav a.active .dot { background: var(--accent); box-shadow: 0 0 10px rgba(57,208,255,.8); }
+
+.main { padding: 26px 28px 60px; }
+.topbar {
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between;
+  margin-bottom: 18px;
+}
+.hero {
+  background: linear-gradient(135deg, rgba(15,26,46,.9), rgba(10,17,31,.75));
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 22px 22px 18px;
+  box-shadow: var(--shadow);
+  position: relative; overflow: hidden;
+}
+.hero::after {
+  content: ""; position: absolute; right: -80px; top: -80px; width: 260px; height: 260px;
+  background: radial-gradient(circle, rgba(57,208,255,.18), transparent 65%);
+}
+.hero h2 { margin: 0 0 6px; font-size: 28px; letter-spacing: .2px; }
+.hero p { margin: 0; color: var(--muted); max-width: 900px; line-height: 1.55; }
+.badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.badge {
+  font-size: 12px; padding: 5px 10px; border-radius: 999px;
+  border: 1px solid var(--border-strong); color: #d7ecff;
+  background: rgba(57,208,255,.08);
+}
+.badge.v { border-color: rgba(139,92,246,.4); background: rgba(139,92,246,.12); }
+.badge.g { border-color: rgba(0,255,163,.3); background: rgba(0,255,163,.08); color: #d9fff1; }
+
+.section { display: none; animation: fade .25s ease; }
+.section.active { display: block; }
+@keyframes fade { from { opacity: .4; transform: translateY(4px);} to { opacity: 1; transform: none; } }
+
+.grid { display: grid; gap: 16px; }
+.grid.cols-2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+.grid.cols-3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.grid.cols-4 { grid-template-columns: repeat(4, minmax(0,1fr)); }
+@media (max-width: 1200px) { .grid.cols-4 { grid-template-columns: repeat(2,1fr); } .grid.cols-3 { grid-template-columns: repeat(2,1fr); } }
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
+  .grid.cols-2, .grid.cols-3, .grid.cols-4 { grid-template-columns: 1fr; }
+  .main { padding: 18px 14px 40px; }
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 16px 14px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+}
+.card h3 { margin: 0 0 8px; font-size: 17px; }
+.card h4 { margin: 14px 0 6px; font-size: 14px; color: #dff3ff; }
+.card p, .card li { color: var(--muted); line-height: 1.6; }
+.card ul, .card ol { margin: 8px 0 8px 18px; padding: 0; }
+.card strong { color: #f0f7ff; }
+.kpi { padding: 14px; }
+.kpi .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+.kpi .value { font-size: 22px; font-weight: 700; margin-top: 4px; color: #fff; }
+.kpi .sub { font-size: 12px; color: #8fb1cc; margin-top: 2px; }
+.accent-line { height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--accent), transparent); margin: 10px 0 12px; opacity: .7; }
+
+.table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 12px; }
+table { width: 100%; border-collapse: collapse; min-width: 520px; font-size: 14px; }
+th, td { padding: 10px 12px; border-bottom: 1px solid rgba(86,196,255,.1); text-align: left; vertical-align: top; }
+th { color: #dff3ff; background: rgba(57,208,255,.06); font-weight: 600; }
+td { color: var(--muted); }
+tr:last-child td { border-bottom: none; }
+
+.callout {
+  border: 1px solid var(--border-strong);
+  background: rgba(57,208,255,.06);
+  border-radius: 12px; padding: 12px 14px; margin: 10px 0;
+  color: #d8ecff;
+}
+.callout.warn { border-color: rgba(255,204,102,.35); background: rgba(255,204,102,.08); color: #ffe9bf; }
+.callout.ok { border-color: rgba(0,255,163,.28); background: rgba(0,255,163,.07); color: #dfffee; }
+.callout.danger { border-color: rgba(255,107,138,.35); background: rgba(255,107,138,.08); color: #ffdce5; }
+
+.pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); color: #cfe8ff; background: rgba(255,255,255,.03); }
+.tag { font-family: var(--mono); font-size: 12px; color: #bfe9ff; }
+
+.diagram {
+  width: 100%; border: 1px solid var(--border); border-radius: 14px;
+  background: #08101d; padding: 10px; margin: 10px 0;
+}
+.diagram svg { width: 100%; height: auto; display: block; }
+.pulse { animation: pulse 2.8s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:.35} 50%{opacity:.9} }
+.flow { stroke-dasharray: 6 6; animation: dash 12s linear infinite; }
+@keyframes dash { to { stroke-dashoffset: -240; } }
+.floaty { animation: floaty 6s ease-in-out infinite; }
+@keyframes floaty { 0%,100%{transform: translateY(0)} 50%{transform: translateY(-6px)} }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+.tab-btn {
+  background: rgba(255,255,255,.03); color: var(--muted); border: 1px solid var(--border);
+  padding: 7px 12px; border-radius: 999px; cursor: pointer; font: inherit; font-size: 13px;
+}
+.tab-btn.active { color: #fff; border-color: var(--border-strong); background: rgba(57,208,255,.12); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+details {
+  border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: rgba(255,255,255,.02); margin: 8px 0;
+}
+summary { cursor: pointer; color: #e8f4ff; font-weight: 600; }
+details p, details li { color: var(--muted); }
+
+.gallery-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px;
+}
+.gallery-item {
+  border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--panel);
+}
+.gallery-item img { width: 100%; height: 170px; object-fit: cover; display: block; background: #08101d; }
+.gallery-item .meta { padding: 10px 12px; }
+.gallery-item .title { font-size: 14px; color: #eef7ff; margin-bottom: 2px; }
+.gallery-item .desc { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+.footer-note { color: #7f97b4; font-size: 13px; margin-top: 18px; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+hr.sep { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.flex { display: flex; gap: 10px; flex-wrap: wrap; }
+.right { text-align: right; }
+.center { text-align: center; }
+.mt { margin-top: 12px; }
+.mb { margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">X4</div>
+      <div>
+        <h1>Xinu · ESP32-P4</h1>
+        <p>Kernel baremetal SMP — guía completa</p>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="nav-group">
+        <div class="nav-group-title">Visión general</div>
+        <a href="#inicio" data-section="inicio" class="active"><span class="dot"></span>Inicio / Dashboard</a>
+        <a href="#arquitectura" data-section="arquitectura"><span class="dot"></span>Arquitectura global</a>
+        <a href="#memoria-mapa" data-section="memoria-mapa"><span class="dot"></span>Mapa de memoria</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">Arranque y plataforma</div>
+        <a href="#arranque" data-section="arranque"><span class="dot"></span>Machine, SBL y ULP</a>
+        <a href="#loader-port" data-section="loader-port"><span class="dot"></span>Loader y port ESP32-P4</a>
+        <a href="#build" data-section="build"><span class="dot"></span>Build, flash y config</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">Núcleo</div>
+        <a href="#kernel-core" data-section="kernel-core"><span class="dot"></span>Inicialización y núcleo</a>
+        <a href="#hilos" data-section="hilos"><span class="dot"></span>Hilos y scheduler</a>
+        <a href="#smp" data-section="smp"><span class="dot"></span>Multinúcleo (SMP)</a>
+        <a href="#memoria" data-section="memoria"><span class="dot"></span>Memoria y asignadores</a>
+        <a href="#traps" data-section="traps"><span class="dot"></span>Traps, IRQs y syscalls</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">Apps y gráficos</div>
+        <a href="#elf" data-section="elf"><span class="dot"></span>ELF loader y exports</a>
+        <a href="#apps" data-section="apps"><span class="dot"></span>Sistema de apps</a>
+        <a href="#graficos" data-section="graficos"><span class="dot"></span>LCD, LVGL y gráficos</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">Práctica</div>
+        <a href="#como-usar" data-section="como-usar"><span class="dot"></span>Usar y modificar el kernel</a>
+        <a href="#galeria" data-section="galeria"><span class="dot"></span>Galería</a>
+      </div>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <!-- INICIO -->
+    <section id="inicio" class="section active">
+      <div class="hero">
+        <h2>Documentación completa: Xinu desde cero en ESP32-P4</h2>
+        <p>Este sitio documenta a fondo el kernel <strong>Xinu</strong> portado a <strong>ESP32-P4 (RISC-V, baremetal, SMP, 2 núcleos HP)</strong>. Cubre la cadena de arranque (SBL/ULP), el loader, el port de plataforma, el núcleo (hilos, planificación, sincronización, memoria), el soporte multinúcleo, el cargador ELF (corazón del sistema de aplicaciones), los drivers/dispositivos, LVGL, y cómo compilar, usar y extender el sistema. Objetivo: que puedas entender, crear y modificar un sistema operativo real sobre este hardware.</p>
+        <div class="badges">
+          <span class="badge">RISC-V RV32IMAF(C/Zicsr/Zifencei)</span>
+          <span class="badge v">SMP 2 cores (HP)</span>
+          <span class="badge g">Baremetal + XiP + PSRAM</span>
+          <span class="badge">ELF ET_REL apps</span>
+          <span class="badge">LVGL residente</span>
+        </div>
+      </div>
+
+      <div class="grid cols-4 mt">
+        <div class="card kpi"><div class="label">Plataforma</div><div class="value">ESP32-P4</div><div class="sub">SoC RISC-V, L2MEM interna + PSRAM externa</div></div>
+        <div class="card kpi"><div class="label">Modelo de ejecución</div><div class="value">SMP afinidad fija</div><div class="sub">Colas por núcleo, IPIs, BKL con handoff</div></div>
+        <div class="card kpi"><div class="label">Apps de usuario</div><div class="value">ELF ET_REL</div><div class="sub">Cargadas desde SD, enlazadas contra exports del kernel</div></div>
+        <div class="card kpi"><div class="label">UI</div><div class="value">LVGL + LCD/Touch</div><div class="sub">Hebra residente <code>lvglui</code>, apps en C</div></div>
+      </div>
+
+      <div class="grid cols-2 mt">
+        <div class="card">
+          <h3>Mapa rápido del repositorio</h3>
+          <div class="accent-line"></div>
+          <div class="table-wrap"><table>
+            <tr><th>Ruta</th><th>Rol</th></tr>
+            <tr><td><code>machine/</code></td><td>SBL (2ª etapa HP), ULP (firmware LP core), linker scripts, imágenes en <code>machine/build/</code>.</td></tr>
+            <tr><td><code>loader/</code></td><td>Entry del kernel por plataforma (<code>start.S</code>): runtime mínimo, vectores de excepción, bifurcación core0/core1, salto a C.</td></tr>
+            <tr><td><code>compile/</code></td><td>Build del kernel, <code>xinu.conf</code>, <code>platformVars</code>, <code>ld.script</code>, generador de config/devtab.</td></tr>
+            <tr><td><code>system/</code></td><td>Núcleo: init, scheduler, hilos, memoria, sincronización, traps/syscalls, ELF, exports, SMP de plataforma.</td></tr>
+            <tr><td><code>device/</code></td><td>Drivers: UART/tty, LCD, touch, LVGL, SDMMC/SD/FAT, GPIO/I2C, audio, red (SDIO/espeth, raw/udp/tcp/telnet), etc.</td></tr>
+            <tr><td><code>include/</code></td><td>Headers del kernel, SoC, drivers, red, ELF/exports, API pública.</td></tr>
+            <tr><td><code>shell/</code></td><td>Shell y comandos (<code>elf</code>, <code>ps</code>, <code>mem</code>, WiFi/audio, etc.).</td></tr>
+            <tr><td><code>examples/p4-elfsdk/</code></td><td>SDK de apps ELF en C: <code>lib/</code> (start, gestos, estado), apps de ejemplo y herramientas.</td></tr>
+            <tr><td><code>fatfs/</code>, <code>lvgl/</code>, <code>network/</code></td><td>Componentes integrados: FAT, LVGL 8.3 vendorizado, pila de red nativa.</td></tr>
+          </table></div>
+        </div>
+        <div class="card">
+          <h3>Flujo de arranque (resumen)</h3>
+          <div class="accent-line"></div>
+          <div class="diagram">
+            <svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="bx" x1="0" x2="1"><stop offset="0" stop-color="#123"/><stop offset="1" stop-color="#0b2033"/></linearGradient>
+                <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#39d0ff"/></marker>
+              </defs>
+              <rect x="20" y="40" width="170" height="70" rx="12" fill="url(#bx)" stroke="#39d0ff" stroke-opacity=".5"/>
+              <text x="105" y="68" text-anchor="middle" fill="#e6f1ff" font-size="16">ROM / Boot HW</text>
+              <text x="105" y="92" text-anchor="middle" fill="#9bb0c9" font-size="12">Carga SBL @ 0x2000</text>
+
+              <rect x="230" y="40" width="190" height="90" rx="12" fill="url(#bx)" stroke="#8b5cf6" stroke-opacity=".5"/>
+              <text x="325" y="68" text-anchor="middle" fill="#e6f1ff" font-size="16">SBL (machine/sbl)</text>
+              <text x="325" y="90" text-anchor="middle" fill="#9bb0c9" font-size="12">WDT, clock, PSRAM, MMU</text>
+              <text x="325" y="108" text-anchor="middle" fill="#9bb0c9" font-size="12">libera core1, salta kernel</text>
+
+              <rect x="460" y="40" width="190" height="90" rx="12" fill="url(#bx)" stroke="#00ffa3" stroke-opacity=".5"/>
+              <text x="555" y="66" text-anchor="middle" fill="#e6f1ff" font-size="16">Loader start.S</text>
+              <text x="555" y="88" text-anchor="middle" fill="#9bb0c9" font-size="12">.data/.bss, FPU, mtvt/mtvec</text>
+              <text x="555" y="106" text-anchor="middle" fill="#9bb0c9" font-size="12">core1 aparcado → nulluser</text>
+
+              <rect x="690" y="40" width="190" height="90" rx="12" fill="url(#bx)" stroke="#39d0ff" stroke-opacity=".5"/>
+              <text x="785" y="66" text-anchor="middle" fill="#e6f1ff" font-size="16">Kernel C</text>
+              <text x="785" y="88" text-anchor="middle" fill="#9bb0c9" font-size="12">platforminit → sysinit</text>
+              <text x="785" y="106" text-anchor="middle" fill="#9bb0c9" font-size="12">devices, main, shell/apps</text>
+
+              <line x1="190" y1="75" x2="230" y2="75" stroke="#39d0ff" stroke-width="2" marker-end="url(#arr)" class="flow"/>
+              <line x1="420" y1="85" x2="460" y2="85" stroke="#39d0ff" stroke-width="2" marker-end="url(#arr)" class="flow"/>
+              <line x1="650" y1="85" x2="690" y2="85" stroke="#39d0ff" stroke-width="2" marker-end="url(#arr)" class="flow"/>
+
+              <rect x="230" y="190" width="190" height="70" rx="12" fill="url(#bx)" stroke="#ffcc66" stroke-opacity=".5"/>
+              <text x="325" y="218" text-anchor="middle" fill="#e6f1ff" font-size="15">ULP (LP core)</text>
+              <text x="325" y="240" text-anchor="middle" fill="#9bb0c9" font-size="12">machine/ulp, 0x40400000</text>
+              <line x1="325" y1="130" x2="325" y2="190" stroke="#ffcc66" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#arr)"/>
+              <text x="360" y="165" fill="#ffcc66" font-size="11">ulp_boot()</text>
+
+              <rect x="460" y="190" width="190" height="70" rx="12" fill="url(#bx)" stroke="#00ffa3" stroke-opacity=".45"/>
+              <text x="555" y="218" text-anchor="middle" fill="#e6f1ff" font-size="15">Core 1 HP</text>
+              <text x="555" y="240" text-anchor="middle" fill="#9bb0c9" font-size="12">park → espera go → SMP idle</text>
+              <line x1="555" y1="130" x2="555" y2="190" stroke="#00ffa3" stroke-width="2" marker-end="url(#arr)"/>
+            </svg>
+          </div>
+          <p class="small">Entrada del kernel en flash XiP: <code>0x40005000</code> (<code>__kernel_entry_point</code>). El SBL prepara reloj/PSRAM/MMU; el loader prepara el entorno C y los vectores; <code>nulluser()</code> inicializa el sistema y crea <code>main</code>.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ARQUITECTURA -->
+    <section id="arquitectura" class="section">
+      <div class="card">
+        <h3>Arquitectura global del sistema</h3>
+        <div class="accent-line"></div>
+        <p>El sistema es un Xinu monolítico educativo adaptado a ESP32-P4: kernel y drivers enlazados en una sola imagen que ejecuta desde flash (XiP), con datos/stacks/heap de kernel en L2MEM interna y uso intensivo de PSRAM externa para heaps secundarios, pilas de hilos, buffers gráficos/audio y carga de apps ELF. Las apps de usuario no son procesos aislados por MMU: son imágenes ELF relocalizables cargadas en memoria y ejecutadas en hilos del kernel, enlazadas dinámicamente contra una tabla de símbolos exportados.</p>
+        <div class="grid cols-3 mt">
+          <div class="card">
+            <h4>Boot &amp; plataforma</h4>
+            <ul>
+              <li><strong>ROM</strong> → <strong>SBL</strong> (<code>machine/sbl</code>): WDT, clock, <code>psram_init</code>, <code>mmu_init</code>, wakeup ULP, salto a kernel.</li>
+              <li><strong>Loader</strong> (<code>loader/platforms/esp32p4/start.S</code>): copia <code>.data</code>, limpia <code>.bss</code>, instala <code>mtvt/mtvec</code>, FPU, stacks, <code>nulluser</code>.</li>
+              <li><strong>Platform init</strong> (<code>system/platforms/esp32p4/platforminit.c</code>): CLIC, ecall, timer, metadatos de plataforma/heap.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h4>Núcleo Xinu</h4>
+            <ul>
+              <li>Hilos (<code>create/create_on</code>, <code>thrtab</code>), colas, semáforos, monitores, mailboxes, sleep/timers.</li>
+              <li>Scheduler con afinidad por núcleo (<code>percpu[].readyq</code>) y cambio de contexto RISC-V (GPR+FPU).</li>
+              <li>Memoria: <code>memlist</code> (L2MEM), <code>psramlist</code> (PSRAM), pilas preferentemente en PSRAM.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h4>Usuarios, UI y E/S</h4>
+            <ul>
+              <li><strong>ELF loader</strong> (<code>system/elfload.c</code>) + <strong>exports</strong> (<code>system/exports.c</code>) = ABI de apps.</li>
+              <li>Launcher/apps en SD (<code>/apps/&lt;app&gt;/...</code>), librería común de UI/gestos.</li>
+              <li>Drivers: LCD/touch/LVGL, SDMMC/FAT, UART/tty, GPIO/I2C/power/audio, red WiFi/SDIO + pila TCP/IP nativa.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Subsistemas y archivos clave</h3>
+        <div class="table-wrap"><table>
+          <tr><th>Subsistema</th><th>Archivos/dirs clave</th><th>Responsabilidad</th></tr>
+          <tr><td>Arranque HW</td><td><code>machine/sbl/*</code>, <code>machine/ulp/*</code>, <code>machine/Makefile</code></td><td>Inicialización mínima SoC, mapeo PSRAM/MMU, arranque LP core, salto al kernel.</td></tr>
+          <tr><td>Loader / vectores</td><td><code>loader/platforms/esp32p4/start.S</code></td><td>C runtime inicial, tabla de excepciones síncronas, setup stacks/CSRs, park core1.</td></tr>
+          <tr><td>Plataforma</td><td><code>system/platforms/esp32p4/{platforminit,clic,trap,riscvclk,irqentry,ctxsw,smpcore,core1smp,crashscreen}.c|.S</code></td><td>CLIC, timer/IPI, trampas, cambio de contexto, SMP por hart, pantalla de pánico.</td></tr>
+          <tr><td>Init núcleo</td><td><code>system/initialize.c</code>, <code>system/main.c</code></td><td>Tablas kernel, heaps, dispositivos, lanzamiento de core1, tareas de arranque/shell.</td></tr>
+          <tr><td>Scheduling</td><td><code>system/{create,ready,resched,kill,suspend,resume,sleep}.c</code>, <code>include/{thread,percpu}.h</code></td><td>Ciclo de vida de hilos, colas ready por CPU, afinidad, preempción.</td></tr>
+          <tr><td>Memoria</td><td><code>system/{memget,memfree,stkget,psrammem}.c</code>, <code>include/memory.h</code>, <code>ld.script</code></td><td>Heap L2MEM, heap PSRAM, pilas, layout y páginas compartidas DMA.</td></tr>
+          <tr><td>ELF / ABI apps</td><td><code>system/{elfload,exports,appmgr,taskmon}.c</code>, <code>include/{elfload,exports,appmgr}.h</code></td><td>Carga y reubicación ELF, resolución de símbolos, registro/gestión de apps.</td></tr>
+          <tr><td>Gráficos</td><td><code>device/lcd-esp32p4/*</code>, <code>device/touch/*</code>, <code>device/lvgl/*</code>, <code>lvgl/</code></td><td>Panel ST7796, táctil FT6336, puerto LVGL y hebra de UI.</td></tr>
+          <tr><td>Almacenamiento</td><td><code>device/sdmmc-esp32p4/*</code>, <code>device/sdblock-esp32p4/*</code>, <code>device/fat/*</code>, <code>fatfs/*</code></td><td>Controlador SDMMC, bloque SD, volumen FAT y API de ficheros.</td></tr>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- MAPA MEMORIA -->
+    <section id="memoria-mapa" class="section">
+      <div class="card">
+        <h3>Mapa de memoria del port ESP32-P4</h3>
+        <div class="accent-line"></div>
+        <p>El layout lo definen principalmente <code>compile/platforms/esp32p4/ld.script</code>, el SBL (<code>machine/sbl</code>), y la inicialización en <code>loader/start.S</code> + <code>system/initialize.c</code>/<code>platforminit.c</code>. El kernel ejecuta en flash mapeada (XiP) y usa L2MEM interna para datos/heap/pilas críticas y PSRAM para heaps grandes, buffers y código/datos de apps ELF.</p>
+        <div class="diagram">
+          <svg viewBox="0 0 980 520" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="m1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#10243a"/><stop offset="1" stop-color="#0b1626"/></linearGradient>
+            </defs>
+            <text x="20" y="30" fill="#e6f1ff" font-size="18">Regiones principales</text>
+
+            <!-- Flash -->
+            <rect x="20" y="50" width="300" height="190" rx="14" fill="url(#m1)" stroke="#39d0ff" stroke-opacity=".45"/>
+            <text x="170" y="78" text-anchor="middle" fill="#39d0ff" font-size="15">FLASH XiP</text>
+            <text x="170" y="98" text-anchor="middle" fill="#9bb0c9" font-size="12">0x40005000 .. +31M</text>
+            <rect x="40" y="115" width="260" height="26" rx="6" fill="#16314a"/>
+            <text x="170" y="133" text-anchor="middle" fill="#dff3ff" font-size="12">.init / ExceptionVectorTable / .text</text>
+            <rect x="40" y="145" width="260" height="26" rx="6" fill="#142a40"/>
+            <text x="170" y="163" text-anchor="middle" fill="#dff3ff" font-size="12">.rodata / tablas / .ctors</text>
+            <rect x="40" y="175" width="260" height="26" rx="6" fill="#102235"/>
+            <text x="170" y="193" text-anchor="middle" fill="#9bb0c9" font-size="12">_etext (fin imagen en flash)</text>
+            <text x="170" y="225" text-anchor="middle" fill="#9bb0c9" font-size="12">Entry: __kernel_entry_point = 0x40005000</text>
+
+            <!-- L2MEM -->
+            <rect x="340" y="50" width="300" height="420" rx="14" fill="url(#m1)" stroke="#8b5cf6" stroke-opacity=".45"/>
+            <text x="490" y="78" text-anchor="middle" fill="#8b5cf6" font-size="15">HP_L2MEM (interna)</text>
+            <text x="490" y="98" text-anchor="middle" fill="#9bb0c9" font-size="12">0x4FF00000 .. 0x4FFBFFFF (768K)</text>
+            <rect x="360" y="115" width="260" height="46" rx="6" fill="#2a173f"/>
+            <text x="490" y="135" text-anchor="middle" fill="#ffe9bf" font-size="12">.l2reserve (128K, NOLOAD)</text>
+            <text x="490" y="152" text-anchor="middle" fill="#9bb0c9" font-size="11">zona reservada/no fiable para heap kernel</text>
+            <rect x="360" y="165" width="260" height="26" rx="6" fill="#1d2440"/>
+            <text x="490" y="183" text-anchor="middle" fill="#dff3ff" font-size="12">.vectors (reservada, NOLOAD)</text>
+            <rect x="360" y="195" width="260" height="30" rx="6" fill="#17263d"/>
+            <text x="490" y="215" text-anchor="middle" fill="#dff3ff" font-size="12">.data (copiada desde flash)</text>
+            <rect x="360" y="229" width="260" height="30" rx="6" fill="#152235"/>
+            <text x="490" y="249" text-anchor="middle" fill="#dff3ff" font-size="12">.bss</text>
+            <rect x="360" y="263" width="260" height="28" rx="6" fill="#1a2f2a"/>
+            <text x="490" y="282" text-anchor="middle" fill="#dfffee" font-size="12">.core1stk (2 KB, NOLOAD)</text>
+            <rect x="360" y="295" width="260" height="28" rx="6" fill="#24314a"/>
+            <text x="490" y="314" text-anchor="middle" fill="#dff3ff" font-size="12">panicstk (16 KB)</text>
+            <rect x="360" y="327" width="260" height="28" rx="6" fill="#24314a"/>
+            <text x="490" y="346" text-anchor="middle" fill="#dff3ff" font-size="12">stack null thread (16 KB) → memheap</text>
+            <rect x="360" y="359" width="260" height="72" rx="6" fill="#10304a"/>
+            <text x="490" y="388" text-anchor="middle" fill="#e6f1ff" font-size="13">memlist (heap L2MEM)</text>
+            <text x="490" y="408" text-anchor="middle" fill="#9bb0c9" font-size="12">memheap .. _l2mem_free_end (0x4FFB0000)</text>
+            <rect x="360" y="435" width="260" height="22" rx="6" fill="#2a1730"/>
+            <text x="490" y="451" text-anchor="middle" fill="#ffdce5" font-size="11">últimos 64 KB reservados a ROM</text>
+
+            <!-- PSRAM -->
+            <rect x="660" y="50" width="300" height="420" rx="14" fill="url(#m1)" stroke="#00ffa3" stroke-opacity=".45"/>
+            <text x="810" y="78" text-anchor="middle" fill="#00ffa3" font-size="15">PSRAM externa</text>
+            <text x="810" y="98" text-anchor="middle" fill="#9bb0c9" font-size="12">0x48000000 .. 0x49FF7FFF (32M-32K)</text>
+            <rect x="680" y="115" width="260" height="22" rx="6" fill="#17362e"/>
+            <text x="810" y="131" text-anchor="middle" fill="#dfffee" font-size="11">.audioshare (desc/bufs audio TX/RX)</text>
+            <rect x="680" y="141" width="260" height="22" rx="6" fill="#17362e"/>
+            <text x="810" y="157" text-anchor="middle" fill="#dfffee" font-size="11">.sdshare (desc/bloque SD)</text>
+            <rect x="680" y="167" width="260" height="226" rx="6" fill="#10324b"/>
+            <text x="810" y="220" text-anchor="middle" fill="#e6f1ff" font-size="14">psramlist (heap PSRAM libre)</text>
+            <text x="810" y="244" text-anchor="middle" fill="#9bb0c9" font-size="12">_psram_free_start .. _psram_free_end</text>
+            <text x="810" y="272" text-anchor="middle" fill="#9bb0c9" font-size="12">• pilas de hilos (stkget, preferente)</text>
+            <text x="810" y="294" text-anchor="middle" fill="#9bb0c9" font-size="12">• imágenes ELF de apps</text>
+            <text x="810" y="316" text-anchor="middle" fill="#9bb0c9" font-size="12">• buffers LVGL / shadow / app state</text>
+            <text x="810" y="338" text-anchor="middle" fill="#9bb0c9" font-size="12">• psram_malloc/free/calloc/realloc</text>
+            <rect x="680" y="397" width="260" height="36" rx="6" fill="#2a1730"/>
+            <text x="810" y="416" text-anchor="middle" fill="#ffdce5" font-size="12">0x49FF8000 .. 0x4A000000 reservada a LP core</text>
+            <text x="810" y="432" text-anchor="middle" fill="#9bb0c9" font-size="11">(fuera del heap kernel)</text>
+            <rect x="680" y="440" width="260" height="22" rx="6" fill="#142a40"/>
+            <text x="810" y="456" text-anchor="middle" fill="#bfe9ff" font-size="11">Ventana directa CPU: 0x88xxxxxx (bypass cache)</text>
+          </svg>
+        </div>
+      </div>
+
+      <div class="grid cols-2 mt">
+        <div class="card">
+          <h3>Símbolos y rangos importantes</h3>
+          <div class="table-wrap"><table>
+            <tr><th>Símbolo / dirección</th><th>Significado</th></tr>
+            <tr><td><code>0x40005000</code></td><td>Entrada del kernel (<code>__kernel_entry_point</code>, <code>FLASH ORIGIN</code>, XiP).</td></tr>
+            <tr><td><code>_etext</code></td><td>Fin de código/rodata en flash.</td></tr>
+            <tr><td><code>_data_loadaddr</code> → <code>_sdata.._edata</code></td><td>Copia de datos inicializados desde flash a L2MEM en <code>start.S</code>.</td></tr>
+            <tr><td><code>_sbss.._ebss</code></td><td>BSS limpiada en arranque.</td></tr>
+            <tr><td><code>_end</code></td><td>Fin de secciones estáticas en L2MEM (inicio de reservas dinámicas).</td></tr>
+            <tr><td><code>panicstk</code>, <code>memheap</code></td><td>Stack de pánico y tope/base para heap L2MEM según <code>start.S</code>.</td></tr>
+            <tr><td><code>_l2mem_free_start/end</code></td><td>Rango libre de L2MEM para <code>memlist</code> (tope en <code>0x4FFB0000</code>).</td></tr>
+            <tr><td><code>_psram_free_start/end</code></td><td>Rango libre de PSRAM para <code>psramlist</code>.</td></tr>
+            <tr><td><code>_audio_*_page</code>, <code>_sd_*_page</code></td><td>Páginas NOLOAD compartidas (DMA/CPU) con acceso directo coherente.</td></tr>
+          </table></div>
+        </div>
+        <div class="card">
+          <h3>Notas críticas de coherencia y layout</h3>
+          <ul>
+            <li><strong>Ventana directa PSRAM</strong>: <code>0x48xxxxxx</code> (cacheada) y <code>0x88xxxxxx</code> (directa) apuntan a las mismas celdas; usada en ELF loader, audio y páginas compartidas.</li>
+            <li><strong>Caché y write-back</strong>: antes de ejecutar código copiado por ventana directa o compartir buffers con DMA, el sistema sincroniza/invalida líneas (L1D/L2) para evitar líneas sucias/rancias.</li>
+            <li><strong>Reserva L2MEM</strong>: <code>.l2reserve</code> (128 KB) y recorte superior hasta <code>_l2mem_free_end</code> evitan zonas conflictivas (cache/ROM) medidas en esta placa.</li>
+            <li><strong>Páginas DMA dedicadas</strong>: audio y SD viven en secciones NOLOAD alineadas para no compartir líneas de caché con cabeceras del heap.</li>
+            <li><strong>Heap kernel vs PSRAM</strong>: <code>memlist</code> es pequeño y valioso (L2MEM); <code>stkget()</code> prioriza PSRAM para no agotarlo.</li>
+          </ul>
+          <div class="callout warn"><strong>Importante:</strong> el kernel corre sin MMU de protección de memoria entre tareas/apps. La corrección depende de disciplina de APIs, locking y del modelo cooperativo/afinidad definido.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ARRANQUE: MACHINE/SBL/ULP -->
+    <section id="arranque" class="section">
+      <div class="card">
+        <h3>Machine: SBL, ULP y arranque de hardware</h3>
+        <div class="accent-line"></div>
+        <p>La carpeta <code>machine/</code> contiene piezas de arranque independientes del kernel, con su propio <code>Makefile</code>, toolchain, flags y scripts de enlace. Produce binarios en <code>machine/build/</code>: <code>sbl.bin</code> (flasheado en <code>0x2000</code>) y <code>ulp.bin</code> (flasheado en <code>0x400000</code>).</p>
+      </div>
+
+      <div class="grid cols-2 mt">
+        <div class="card">
+          <h3>SBL (Second Stage Bootloader, HP core)</h3>
+          <ul>
+            <li><strong>Fuentes:</strong> <code>machine/sbl/boot.S</code>, <code>clock.c</code>, <code>wdt.c</code>, <code>mmu.c</code>, <code>ulp_boot.c</code>, <code>esp32p4.h</code>, <code>SBL.ld</code>, <code>libpsram.a</code>.</li>
+            <li><strong>ISA/ABI:</strong> <code>rv32imafdc_zicsr_zifencei / ilp32f</code> (freestanding, <code>-DCHIP_ESP32P4</code>).</li>
+            <li><strong>Enlace:</strong> TCM HP, entrada <code>_start</code>, define <code>__kernel_entry_point = 0x40005000</code> y <code>__ulp_entry_point = 0x40400000</code>.</li>
+            <li><strong>Flujo (<code>boot.S</code>):</strong> lee <code>mhartid</code> (solo core0 inicializa), habilita memorias internas, configura stack temporal, llama <code>wdt_disable_all_wdt</code>, <code>clock_init</code>, <code>psram_init</code>, <code>mmu_init</code>; libera core1 (escribe dirección de arranque y controla bits de clock/reset), opcionalmente despierta LP core (<code>ulp_boot</code>) y salta a <code>__kernel_entry_point</code>.</li>
+          </ul>
+          <div class="callout"><strong>Rol del SBL:</strong> dejar el SoC en un estado ejecutable para Xinu (reloj, WDT, PSRAM mapeada/MMU, cores secundarios preparados) antes de transferir control al kernel en flash XiP.</div>
+        </div>
+        <div class="card">
+          <h3>ULP (Low Power core)</h3>
+          <ul>
+            <li><strong>Fuentes:</strong> <code>machine/ulp/boot.S</code>, <code>intvect.S</code>, <code>startup.c</code>, <code>main.c</code>, <code>ulp.ld</code>.</li>
+            <li><strong>ISA/ABI:</strong> <code>rv32imc_zicsr_zifencei / ilp32</code>.</li>
+            <li><strong>Construcción:</strong> enlazado a ELF y convertido a binario crudo con <code>objcopy -O binary</code>.</li>
+            <li><strong>Arranque:</strong> <code>ulp_boot.c</code> en SBL programa punto de entrada/reset/wakeup del LP core (registros PMU/LP AON). El firmware LP actual es mínimo (bucle/placeholder) y sirve como base para extensiones de bajo consumo.</li>
+          </ul>
+          <div class="callout warn"><strong>Separación importante:</strong> SBL, ULP y kernel son artefactos distintos con enlaces y offsets propios; deben mantenerse coherentes (offsets de flash, entry points y linker scripts).</div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Construcción de imágenes de arranque</h3>
+        <pre><code># Desde la raíz (usa machine/Makefile)
+make -C machine sbl      # genera machine/build/sbl.elf y sbl.bin
+make -C machine ulp      # genera machine/build/ulp.elf y ulp.bin
+make -C machine all
+
+# Desde compile/ (integra dependencias en el build general)
+cd compile
+make ESPTOOL=/ruta/a/esptool      # construye kernel y asegura sbl/ulp según reglas
+make flash                        # flashea SBL@0x2000, kernel@0x5000, ULP@0x400000</code></pre>
+        <p class="small">El <code>compile/Makefile</code> y <code>platformVars</code> parametrizan <code>ESPTOOL</code>, puerto y baudrate; <code>flashxinu</code> reprograma solo el kernel en <code>0x5000</code>.</p>
+      </div>
+    </section>
+
+    <!-- LOADER Y PORT -->
+    <section id="loader-port" class="section">
+      <div class="card">
+        <h3>Loader del kernel y port a ESP32-P4</h3>
+        <div class="accent-line"></div>
+        <p>El loader de plataforma (<code>loader/platforms/esp32p4/start.S</code>) es el primer código del kernel ejecutado en <code>0x40005000</code>. Prepara el entorno mínimo de C, instala el manejo básico de excepciones síncronas, configura stacks y decide el rol de cada hart HP.</p>
+      </div>
+
+      <div class="grid cols-2 mt">
+        <div class="card">
+          <h3><code>loader/platforms/esp32p4/start.S</code> (flujo detallado)</h3>
+          <ol>
+            <li><strong>Entry:</strong> <code>_start</code> salta a <code>reset_handler</code>.</li>
+            <li><strong>Excepciones síncronas:</strong> <code>ExceptionVectorTable</code> (modo CLIC en <code>mtvec|3</code>) guarda un <code>trap_frame_t</code> (caller-saved + <code>mepc/mstatus</code>) y llama a <code>trap_handler</code> en C; restaura y ejecuta <code>mret</code>.</li>
+            <li><strong>Core0:</strong> inicializa <code>gp</code>, deshabilita IRQ global, habilita FPU (<code>mstatus.FS</code>), limpia <code>fcsr</code>, copia <code>.data</code> (<code>_data_loadaddr → _sdata.._edata</code>) y limpia <code>.bss</code>.</li>
+            <li><strong>Vectores/CSRs:</strong> escribe <code>mtvt</code> con <code>InterruptVectorTable</code> y <code>mtvec</code> con <code>ExceptionVectorTable|3</code>.</li>
+            <li><strong>Stacks:</strong> reserva <code>PANICSTK</code> y <code>NULLSTK</code> (16 KB + 16 KB) sobre <code>_end</code>, publica <code>panicstk</code> y <code>memheap</code>.</li>
+            <li><strong>Estado inicial:</strong> <code>cpuid=0</code>, <code>mscratch=&amp;percpu[0]</code>, salto a <code>nulluser()</code>.</li>
+            <li><strong>Core1 (hart != 0):</strong> ruta <code>park</code> → usa <code>_core1stk_end</code>, instala <code>mtvt/mtvec</code>, escribe testigo <code>{0xC0DE1234, hartid, sp, go=0}</code>, espera señal <code>go</code>, habilita FPU, configura <code>mscratch=&amp;percpu[1]</code> y salta a <code>core1_smp_entry</code>.</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>Port de plataforma (núcleo C + asm específico)</h3>
+          <ul>
+            <li><strong><code>system/platforms/esp32p4/platforminit.c</code></strong>: fija nombre/familia, rangos de heap L2MEM (<code>P4_L2MEM_BASE.._l2mem_free_end</code>), frecuencia de reloj; inicializa CLIC; registra <code>ecall_handler</code> (mcause 11); configura modo de muestreo de <code>mtime</code>.</li>
+            <li><strong><code>system/platforms/esp32p4/clic.c</code></strong>: controlador CLIC (tabla HW-vectored, enable/route/prioridad/threshold) y tabla de despacho de ISRs.</li>
+            <li><strong><code>system/platforms/esp32p4/riscvclk.c</code></strong>: lectura segura de <code>mtime</code> 64-bit y actualización de <code>mtimecmp</code> por hart (<code>clkupdate</code>, <code>clkupdate1</code>).</li>
+            <li><strong><code>system/platforms/esp32p4/irqentry.S</code> + <code>ctxsw.S</code></strong>: entrada común de IRQs y cambio de contexto (incluye FPU y CSRs relevantes).</li>
+            <li><strong><code>system/platforms/esp32p4/core1smp.c</code>, <code>smpcore.c</code></strong>: bring-up/idle de core1, IPIs, estado por CPU, primitivas SMP.</li>
+            <li><strong><code>system/platforms/esp32p4/crashscreen.c</code></strong>: pantalla de fallo directa sobre LCD en excepciones fatales (útil para diagnóstico en placa).</li>
+          </ul>
+          <div class="callout ok"><strong>Idea de diseño del port:</strong> separar lo específico del SoC/hart (CLIC, timer, CSRs, arranque secundario, memoria) del núcleo portable de Xinu (colas, políticas, APIs), manteniendo la semántica de hilos/sincronización.</div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Diferencias y decisiones clave del port ESP32-P4</h3>
+        <div class="grid cols-2">
+          <div>
+            <h4>Hardware/ejecución</h4>
+            <ul>
+              <li>RISC-V HP dual-core con CLIC (interrupciones vectorizadas por hardware) y CLINT/mtime para temporización.</li>
+              <li>Kernel en XiP (flash) con datos en L2MEM y uso intensivo de PSRAM (incl. pilas de hilos y apps ELF).</li>
+              <li>Coherencia explícita en rutas críticas (ventana directa <code>0x88...</code>, sincronización de caché, páginas DMA dedicadas).</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Modelo SMP adoptado</h4>
+            <ul>
+              <li>Afinidad fija por hilo (<code>cpu_home</code>), colas ready por núcleo, IPI para despertar/replanificar.</li>
+              <li>Sin migración automática ni sincronización de I-cache entre núcleos para código dinámico cruzado.</li>
+              <li>Handoff del “big kernel lock” en <code>resched/ctxsw</code> según profundidad guardada por hilo.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- BUILD -->
+    <section id="build" class="section">
+      <div class="card">
+        <h3>Compilación, configuración y flasheo</h3>
+        <div class="accent-line"></div>
+        <div class="grid cols-2">
+          <div>
+            <h4>Kernel</h4>
+            <pre><code># Compilar kernel (desde compile/)
+cd /home/daniel/xinu-p4-smp/compile
+make ESPTOOL=/home/daniel/esp-idf-py/bin/esptool
+
+# Limpiar (recomendado si cambian headers/linker)
+make clean
+
+# Flashear solo kernel @ 0x5000
+make ESPTOOL=/home/daniel/esp-idf-py/bin/esptool flashxinu
+
+# Flashear SBL + kernel + ULP
+make ESPTOOL=/home/daniel/esp-idf-py/bin/esptool flash
+
+# Consola serie
+# /dev/ttyACM0, 115200 8N1</code></pre>
+          </div>
+          <div>
+            <h4>Configuración de dispositivos (<code>xinu.conf</code>)</h4>
+            <ul>
+              <li>Archivo: <code>compile/platforms/esp32p4/xinu.conf</code> (declaración de tipos/instancias/constantes).</li>
+              <li><code>compile/config/config</code> genera <code>system/conf.c</code> e <code>include/conf.h</code>.</li>
+              <li>Controla <code>NTHREAD</code>, <code>NSEM</code>, <code>NDEVS</code>, red (<code>NUDP/NTCP/NETHER</code>), orden de init de dispositivos, etc.</li>
+              <li>Flags/ISA/paths: <code>compile/platforms/esp32p4/platformVars</code>.</li>
+            </ul>
+            <div class="callout warn"><strong>Nota:</strong> el <code>Makefile</code> del kernel no genera dependencias automáticas de headers (<code>DEPFLAGS</code> vacío en esta configuración); tras cambios en <code>.h</code>, linker script o config, usa <code>make clean</code> si no ves recompilación esperada.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Compilar apps ELF (SDK de ejemplos)</h3>
+        <p>Cada app en <code>examples/p4-elfsdk/apps/&lt;app&gt;/</code> tiene su <code>Makefile</code> y se enlaza como objeto relocalizable (<code>ld -r</code>) junto con <code>../lib/start.o</code> y librerías comunes (<code>gestos</code>, <code>estado</code> según la app).</p>
+        <pre><code>cd /home/daniel/xinu-p4-smp/examples/p4-elfsdk/apps
+# Compilar una app
+make -C flappy clean all
+# Compilar todas
+for d in */; do [ -f "$d/Makefile" ] && make -C "$d" clean all; done</code></pre>
+        <p class="small">Salida típica: <code>&lt;app&gt;/&lt;app&gt;.elf</code> (ET_REL RV32), lista para copiar/subir a la SD (p. ej. <code>/apps/flappy/app.elf</code>).</p>
+      </div>
+    </section>
+
+    <!-- KERNEL CORE -->
+    <section id="kernel-core" class="section">
+      <div class="card">
+        <h3>Inicialización del kernel y estructuras principales</h3>
+        <div class="accent-line"></div>
+        <div class="grid cols-2">
+          <div>
+            <h4><code>system/initialize.c</code></h4>
+            <ul>
+              <li><strong><code>nulluser()</code></strong>: llama <code>platforminit()</code>, <code>sysinit()</code>, habilita interrupciones, libera core1 (escribe <code>go=1</code> en <code>_core1stk+12</code>), crea y pone en ready <code>main</code>, y queda como hilo nulo (bucle con <code>pause()</code>/wfi).</li>
+              <li><strong><code>sysinit()</code></strong>: inicializa contadores, <code>memlist</code> (heap L2MEM desde <code>memheap</code> hasta <code>platform.maxaddr</code>), <code>thrtab</code>, estado por CPU (<code>percpu[0/1]</code>), hilo nulo (tid 0) e idle core1 (tid 1, stack en <code>.core1stk</code>), semáforos, monitores, colas ready por core, reloj (<code>clkinit</code>), mailboxes, dispositivos (<code>devtab[i].init</code>) y red (<code>netInit</code> si aplica).</li>
+              <li>Variables globales clave: <code>thrtab</code>, <code>semtab</code>, <code>montab</code>, <code>memlist</code>, <code>bfptab</code>, <code>platform</code>, <code>memheap</code>, <code>cpuid</code>.</li>
+            </ul>
+          </div>
+          <div>
+            <h4><code>system/main.c</code> y secuencia de usuario</h4>
+            <ul>
+              <li>Abre consola, ejecuta tareas de arranque (<code>bootTask</code>, <code>launcherTask</code> en core1 vía <code>elf_run</code>, <code>netBootTask</code>), imprime información de memoria/imagen y crea la shell.</li>
+              <li>El launcher se carga como ELF desde SD (ruta configurada, p. ej. <code>/apps/launcher/launcher.elf</code>) en su propio hilo.</li>
+              <li>Servicios de red/daemons suelen lanzarse en core1 según configuración de afinidad del sistema.</li>
+            </ul>
+            <div class="callout"><strong>Filosofía:</strong> el kernel provee primitivas y drivers; la experiencia de “escritorio/apps” se construye con procesos/hilos que cargan ELFs y usan LVGL/servicios exportados.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Dispositivos y modelo de E/S</h3>
+        <ul>
+          <li><strong><code>xinu.conf</code></strong> define tipos de dispositivo, instancias y el arreglo <code>devtab</code> generado en <code>conf.c/conf.h</code>.</li>
+          <li>Cada dispositivo expone operaciones (init/open/close/read/write/getc/putc/seek/control) según corresponda; llamadas de alto nivel pasan por la capa de sistema (<code>open/read/write/control</code>).</li>
+          <li>Drivers relevantes en este port: <code>uart-esp32p4/tty</code>, <code>lcd-esp32p4</code>, <code>touch</code>, <code>lvgl</code>, <code>sdmmc-esp32p4/sdblock-esp32p4/fat</code>, <code>gpio/i2c/power</code>, <code>audio</code>, <code>sdio-esp32p4/espeth-esp32p4</code>, <code>raw/udp/tcp/telnet</code>, <code>psram</code>, <code>nam</code>.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- HILOS Y SCHEDULER -->
+    <section id="hilos" class="section">
+      <div class="card">
+        <h3>Hilos, estados y planificación</h3>
+        <div class="accent-line"></div>
+        <div class="grid cols-2">
+          <div>
+            <h4>Modelo de hilos (<code>include/thread.h</code>, <code>system/create.c</code>)</h4>
+            <ul>
+              <li><strong>Estados:</strong> <code>THRCURR</code>, <code>THRFREE</code>, <code>THRREADY</code>, <code>THRRECV</code>, <code>THRSLEEP</code>, <code>THRSUSP</code>, <code>THRWAIT</code>, <code>THRTMOUT</code>, <code>THRMIGRATE</code>.</li>
+              <li><strong>Tabla:</strong> <code>thrtab[NTHREAD]</code> con prioridad, pila, nombre, semáforo/mensaje, fds, contabilidad (ticks, pico de pila), metadatos ELF y campos SMP (<code>cpu_home/cpu_last/klock_depth</code>).</li>
+              <li><strong>Creación (<code>create</code>):</strong> reserva TID, asigna pila con <code>stkget()</code> (prefiere PSRAM), inicializa PCB, construye contexto con <code>setupStack()</code> y deja el hilo en <code>THRSUSP</code>. <code>ready()</code> lo encola.</li>
+              <li><strong><code>create_on(core,...)</code>:</strong> igual que <code>create</code> pero fija afinidad explícita al núcleo indicado.</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Planificador (<code>system/resched.c</code>, <code>ready.c</code>)</h4>
+            <ul>
+              <li>Listos por núcleo: <code>percpu[cpu].readyq</code>. <code>ready()</code> encola en el núcleo dueño del hilo (<code>cpu_home</code>), envía IPI si es remoto y marca replanificación.</li>
+              <li><code>resched()</code> selecciona siguiente hilo según prioridad/política, gestiona deferred kill, y realiza <code>ctxsw</code>.</li>
+              <li>El cambio de contexto guarda/restaura registros enteros y FPU, además de estado de ejecución necesario para reanudar correctamente.</li>
+              <li><strong>Hilos especiales:</strong> tid 0 (<code>prnull</code>, core0) y tid 1 (<code>idle1</code>, core1) garantizan progreso cuando no hay trabajo listo.</li>
+            </ul>
+            <div class="callout warn"><strong>Regla SMP:</strong> afinidad fija (sin migración). Diseña la ubicación de tareas con <code>create_on</code> y la separación funcional por núcleo.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Ciclo de vida de un hilo (simplificado)</h3>
+        <div class="diagram">
+          <svg viewBox="0 0 900 220" xmlns="http://www.w3.org/2000/svg">
+            <defs><marker id="a2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#39d0ff"/></marker></defs>
+            <rect x="30" y="80" width="140" height="50" rx="10" fill="#10243a" stroke="#39d0ff" stroke-opacity=".5"/><text x="100" y="110" text-anchor="middle" fill="#e6f1ff">THRSUSP</text>
+            <rect x="220" y="80" width="140" height="50" rx="10" fill="#10243a" stroke="#00ffa3" stroke-opacity=".5"/><text x="290" y="110" text-anchor="middle" fill="#e6f1ff">THRREADY</text>
+            <rect x="410" y="80" width="140" height="50" rx="10" fill="#10243a" stroke="#8b5cf6" stroke-opacity=".5"/><text x="480" y="110" text-anchor="middle" fill="#e6f1ff">THRCURR</text>
+            <rect x="600" y="30" width="140" height="45" rx="10" fill="#10243a" stroke="#ffcc66" stroke-opacity=".5"/><text x="670" y="58" text-anchor="middle" fill="#e6f1ff">THRSLEEP/WAIT</text>
+            <rect x="600" y="140" width="140" height="45" rx="10" fill="#10243a" stroke="#ff6b8a" stroke-opacity=".5"/><text x="670" y="168" text-anchor="middle" fill="#e6f1ff">THRFREE</text>
+            <line x1="170" y1="105" x2="220" y2="105" stroke="#39d0ff" stroke-width="2" marker-end="url(#a2)"/><text x="195" y="96" fill="#9bb0c9" font-size="11">ready()</text>
+            <line x1="360" y1="105" x2="410" y2="105" stroke="#39d0ff" stroke-width="2" marker-end="url(#a2)"/><text x="385" y="96" fill="#9bb0c9" font-size="11">resched</text>
+            <line x1="550" y1="95" x2="600" y2="55" stroke="#39d0ff" stroke-width="2" marker-end="url(#a2)"/><text x="565" y="65" fill="#9bb0c9" font-size="11">sleep/wait</text>
+            <line x1="670" y1="75" x2="330" y2="80" stroke="#39d0ff" stroke-width="2" marker-end="url(#a2)"/><text x="520" y="70" fill="#9bb0c9" font-size="11">wakeup/signal/ready</text>
+            <line x1="550" y1="115" x2="600" y2="160" stroke="#39d0ff" stroke-width="2" marker-end="url(#a2)"/><text x="575" y="150" fill="#9bb0c9" font-size="11">kill/exit</text>
+            <line x1="480" y1="130" x2="290" y2="130" stroke="#39d0ff" stroke-width="2" marker-end="url(#a2)"/><text x="385" y="150" fill="#9bb0c9" font-size="11">preempción/yield</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- SMP -->
+    <section id="smp" class="section">
+      <div class="card">
+        <h3>Multinúcleo (SMP) en ESP32-P4</h3>
+        <div class="accent-line"></div>
+        <p>El kernel implementa SMP simétrico a nivel de infraestructura básica con <strong>afinidad fija</strong>: cada hilo pertenece a un núcleo (<code>cpu_home</code>), cada núcleo tiene su cola de listos, y la coordinación entre núcleos usa IPIs y estado por CPU (<code>percpu[]</code>, <code>mscratch</code>). No hay migración automática de hilos.</p>
+        <div class="grid cols-2 mt">
+          <div>
+            <h4>Arranque y estado por núcleo</h4>
+            <ul>
+              <li><strong>Core0:</strong> ejecuta <code>nulluser()</code>, inicializa sistema, habilita IRQs, libera core1 y crea <code>main</code>.</li>
+              <li><strong>Core1:</strong> aparcado en <code>start.S:park</code> sobre <code>.core1stk</code> esperando <code>go</code>; al despertar salta a <code>core1_smp_entry()</code> (<code>system/platforms/esp32p4/core1smp.c</code>).</li>
+              <li><strong><code>percpu[2]</code>:</strong> hilo actual, cola ready, flags de replanificación, anidamiento, idle, etc. <code>mscratch</code> apunta a la estructura del hart actual.</li>
+              <li><strong>Idle core1:</strong> tid reservado, atiende tick local/IPIs y ejecuta trabajo encolado en su núcleo.</li>
+            </ul>
+            <h4>Interrupciones e IPIs</h4>
+            <ul>
+              <li>CLIC por hart con tabla vectorizada en HW (<code>mtvt</code>/<code>InterruptVectorTable</code>) y despacho C por línea.</li>
+              <li>Timer del sistema en core0; core1 programa/atiende su tick local según la implementación de plataforma.</li>
+              <li>IPIs via registros <code>HP_SYSTEM CPU_INT_FROM_CPU_{0,1}</code> para forzar replanificación/remoto wakeup.</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Sincronización y scheduling</h4>
+            <ul>
+              <li><strong>BKL (big kernel lock):</strong> lock global de núcleo (<code>kernel_lock</code>) con profundidad por hilo (<code>klock_depth</code>), transferido en el cambio de contexto para evitar inconsistencias al dormir/cambiar de hilo.</li>
+              <li><strong><code>disable/restore</code>:</strong> controlan IRQs locales del hart; no sustituyen por sí solos a la sincronización entre núcleos.</li>
+              <li><strong>Colas por núcleo:</strong> evitan contención de una única ready queue global; <code>create_on</code> permite ubicar tareas deliberadamente.</li>
+              <li><strong>Sin migración:</strong> simplifica coherencia de estado/caché y el razonamiento sobre afinidad de drivers/UI.</li>
+            </ul>
+            <div class="callout warn"><strong>Diseño recomendado:</strong> núcleo 0 para init/bring-up crítico, consola, LVGL/UI/touch/display y funciones que deban centralizarse; núcleo 1 para daemons/servidores y trabajo offload cuando sea seguro.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Secuencia SMP (arranque y despacho remoto)</h3>
+        <div class="diagram">
+          <svg viewBox="0 0 920 300" xmlns="http://www.w3.org/2000/svg">
+            <defs><marker id="a3" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#39d0ff"/></marker></defs>
+            <line x1="160" y1="30" x2="160" y2="280" stroke="#355" stroke-width="2"/>
+            <line x1="460" y1="30" x2="460" y2="280" stroke="#355" stroke-width="2"/>
+            <line x1="760" y1="30" x2="760" y2="280" stroke="#355" stroke-width="2"/>
+            <text x="160" y="20" text-anchor="middle" fill="#39d0ff">Core 0 (null/main)</text>
+            <text x="460" y="20" text-anchor="middle" fill="#00ffa3">Core 1 (park/idle)</text>
+            <text x="760" y="20" text-anchor="middle" fill="#8b5cf6">Subsistema</text>
+
+            <text x="170" y="60" fill="#dff3ff" font-size="12">sysinit + enable</text>
+            <line x1="160" y1="80" x2="460" y2="100" stroke="#39d0ff" stroke-width="2" marker-end="url(#a3)"/>
+            <text x="300" y="82" fill="#9bb0c9" font-size="11">escribe go=1 en _core1stk</text>
+            <text x="470" y="120" fill="#dff3ff" font-size="12">core1_smp_entry()</text>
+            <text x="470" y="140" fill="#9bb0c9" font-size="12">init percpu[1], timer local, IPI, idle</text>
+
+            <line x1="760" y1="170" x2="160" y2="170" stroke="#8b5cf6" stroke-width="2" marker-end="url(#a3)"/>
+            <text x="560" y="162" fill="#9bb0c9" font-size="11">create_on(1, tarea...)+ready()</text>
+            <line x1="160" y1="195" x2="460" y2="215" stroke="#39d0ff" stroke-width="2" marker-end="url(#a3)"/>
+            <text x="260" y="198" fill="#9bb0c9" font-size="11">IPI + need_resched (cola core1)</text>
+            <text x="470" y="235" fill="#dff3ff" font-size="12">ipihandler/resched en core1</text>
+            <text x="470" y="255" fill="#9bb0c9" font-size="12">ctxsw → ejecuta tarea afinada</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- MEMORIA -->
+    <section id="memoria" class="section">
+      <div class="card">
+        <h3>Gestión de memoria: L2MEM, PSRAM y pilas</h3>
+        <div class="accent-line"></div>
+        <div class="grid cols-2">
+          <div>
+            <h4>Asignadores y estructuras</h4>
+            <ul>
+              <li><strong><code>memlist</code> (L2MEM):</strong> heap principal del kernel (<code>memget/memfree</code>, <code>include/memory.h</code>, <code>system/mem*.c</code>). Inicializado en <code>sysinit()</code> sobre el rango interno libre.</li>
+              <li><strong><code>psramlist</code> (PSRAM):</strong> segundo heap (<code>system/psrammem.c</code>) con API <code>psram_malloc/free/calloc/realloc/getmem/freemem/free_bytes</code>.</li>
+              <li><strong>Pilas de hilos:</strong> <code>stkget()</code> intenta reservar primero en PSRAM y, si no puede, cae a L2MEM; <code>stkfree()</code> devuelve al pool correcto según rango de dirección.</li>
+              <li><strong><code>MINSTK</code>:</strong> tamaño mínimo de pila al crear hilos (ajustado en este port para aprovechar mejor la RAM interna limitada).</li>
+            </ul>
+            <pre><code>/* Concepto (system/stkget.c) */
+pila = psram_getmem(...) si disponible;
+si no -> memget(...) en L2MEM;
+devuelve puntero al tope de pila (crece hacia abajo)</code></pre>
+          </div>
+          <div>
+            <h4>Uso recomendado</h4>
+            <ul>
+              <li><strong>L2MEM (<code>memget</code>):</strong> estructuras pequeñas del kernel, buffers críticos de baja latencia, recursos internos acotados.</li>
+              <li><strong>PSRAM (<code>psram_malloc</code>):</strong> buffers grandes, estado de apps/UI, imágenes/cachés, datos de audio/gráficos y cargas ELF.</li>
+              <li><strong>Pilas:</strong> confiar en <code>stkget/stkfree</code> (ya integradas en <code>create/kill</code>); evita agotar L2MEM con muchas hebras.</li>
+              <li><strong>Diagnóstico:</strong> comandos <code>mem</code>, <code>ps</code> y telemetría de pila ayudan a detectar fugas/sobredimensionamiento.</li>
+            </ul>
+            <div class="callout warn"><strong>Sin MMU de aislamiento:</strong> un puntero inválido puede corromper memoria compartida (kernel o apps). Valida tamaños, rangos y concurrencia, especialmente con DMA/caché.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Consideraciones de caché y PSRAM en este port</h3>
+        <ul>
+          <li>Algunos subsistemas acceden PSRAM por ventana directa (<code>0x88...</code>) y/o requieren sincronización/invalidate explícita de L1D/L2 para coherencia con DMA o con la ventana cacheada (<code>0x48...</code>).</li>
+          <li>El cargador ELF ejecuta y deja datos en ventana directa para evitar problemas de I-cache/líneas sucias/rancias, pero aun así realiza operaciones de sincronización de caché en los momentos adecuados.</li>
+          <li>Las páginas compartidas reservadas en el linker (audio/SD) evitan colisiones de líneas de caché con metadatos del heap.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- TRAPS -->
+    <section id="traps" class="section">
+      <div class="card">
+        <h3>Excepciones, interrupciones y llamadas al sistema</h3>
+        <div class="accent-line"></div>
+        <div class="grid cols-2">
+          <div>
+            <h4>Excepciones síncronas (traps)</h4>
+            <ul>
+              <li><strong>Entrada asm:</strong> <code>loader/.../start.S</code> define <code>ExceptionVectorTable</code> (modo CLIC para excepciones), guarda marco y llama a <code>trap_handler()</code>.</li>
+              <li><strong>Despacho C:</strong> <code>system/arch/riscv/trap.c</code> (incluido por plataforma) identifica <code>mcause</code>, maneja <code>ecall</code> (ajusta <code>mepc</code>, invoca dispatcher) o despacha handlers registrados.</li>
+              <li><strong>Fallo no manejado:</strong> imprime diagnóstico (<code>mcause/mepc/mtval/regs</code>), puede intentar atribuir dirección a imagen ELF y muestra pantalla de fallo (si disponible) / detiene/reinicia según manejo de plataforma.</li>
+              <li><strong>Marco:</strong> <code>trap_frame_t</code> (definido en headers de arch/trap) conserva registros necesarios para diagnóstico y retorno desde ecall.</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Interrupciones y ecall</h4>
+            <ul>
+              <li><strong>IRQs HW-vectored:</strong> llegan por <code>mtvt</code> a la tabla del CLIC; la entrada común (<code>irqentry.S</code>) guarda contexto y llama al handler C registrado en <code>interruptVector[]</code>.</li>
+              <li><strong>Timer:</strong> genera ticks para contabilidad, preempción y wakeups; en SMP hay consideraciones por núcleo (tick global/local según diseño).</li>
+              <li><strong>IPIs:</strong> señalización entre núcleos para replanificación.</li>
+              <li><strong>Syscall (ecall):</strong> puerta de llamadas desde contexto que usa ecall (si aplica), despachada por <code>syscall_dispatch()</code> (tabla <code>sysent.c</code>).</li>
+            </ul>
+            <div class="callout"><strong>Depuración de crashes:</strong> conserva <code>mepc/mtval/ra</code> y, si la dirección cae en <code>0x88...</code>, usa utilidades del ELF loader (<code>elf_quien/elf_dump_trap</code>) para atribuirla a una app.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ELF / EXPORTS -->
+    <section id="elf" class="section">
+      <div class="card">
+        <h3>ELF loader y tabla de exports: el corazón de las apps</h3>
+        <div class="accent-line"></div>
+        <p>Las aplicaciones de usuario se distribuyen como <strong>ELF32 RISC-V relocalizables (<code>ET_REL</code>)</strong>, generados con <code>ld -r</code>. El kernel no “enlaza” con libc de usuario: las apps llaman a símbolos del kernel (hilos, memoria, E/S, FAT, LVGL, red, etc.) que se resuelven dinámicamente contra la tabla <code>system/exports.c</code>.</p>
+        <div class="grid cols-2 mt">
+          <div>
+            <h4><code>system/elfload.c</code> (flujo)</h4>
+            <ol>
+              <li><strong>Lectura:</strong> abre el fichero en FAT/SD y carga la imagen ELF en memoria (buffers en PSRAM).</li>
+              <li><strong>Validación:</strong> cabecera ELF, clase/arquitectura, tipo <code>ET_REL</code>, tablas/secciones necesarias (<code>.symtab</code>, <code>.strtab</code>, secciones <code>SHF_ALLOC</code>, relocs).</li>
+              <li><strong>Colocación:</strong> reserva un bloque en PSRAM, asigna direcciones a secciones alojables respetando alineación; copia <code>PROGBITS</code> y limpia <code>NOBITS</code> (.bss).</li>
+              <li><strong>Resolución:</strong> símbolos definidos internos por sección+offset; símbolos <code>UND</code> por nombre vía <code>export_resolve()</code> (y casos locales como <code>exit</code>).</li>
+              <li><strong>Relocaciones:</strong> aplica tipos soportados (p. ej. <code>R_RISCV_32</code>, <code>HI20</code>, <code>LO12_I</code>, <code>CALL/PLT</code>); aborta si encuentra relocaciones no soportadas o fuera de rango para evitar saltos a direcciones inválidas.</li>
+              <li><strong>Ejecución:</strong> localiza <code>_start</code>, realiza sincronización/invalidate de caché según sea necesario y salta con <code>argc/argv</code> (la app corre en la hebra llamadora).</li>
+              <li><strong>Liberación:</strong> el hilo queda marcado como portador de imagen ELF; al salir/morir, el kernel libera el bloque de PSRAM asociado (modelo de un nivel).</li>
+            </ol>
+          </div>
+          <div>
+            <h4><code>system/exports.c</code> y ABI</h4>
+            <ul>
+              <li>Tabla estática de pares <code>{nombre, dirección}</code> que define la interfaz disponible para ELFs: hilos, semáforos/monitores, memoria, stdio/libc básica, dispositivos, FAT (<code>fl_*</code>), LVGL, red, utilidades del sistema, etc.</li>
+              <li>Mantener símbolos referenciados en esta tabla también evita que el enlazador los elimine por <code>--gc-sections</code> si no los usa el propio kernel.</li>
+              <li><strong>No es ABI binaria estable entre builds arbitrarios:</strong> en general, kernel y apps deben compilarse de forma coherente con la misma tabla/entorno del árbol.</li>
+              <li><strong>Reglas prácticas para apps:</strong> llamar solo a símbolos exportados, respetar ABI C/RISC-V del proyecto, usar banderas de compilación compatibles, y seguir restricciones del cargador (p. ej. evitar patrones que generen relocaciones no soportadas).</li>
+            </ul>
+            <div class="callout ok"><strong>Ventaja educativa:</strong> puedes ver y modificar exactamente qué superficie del SO se expone a programas de usuario, y cómo se resuelve el enlace dinámico en un sistema sin loader de usuario tradicional.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Relocaciones RISC-V soportadas (visión práctica)</h3>
+        <div class="table-wrap"><table>
+          <tr><th>Tipo</th><th>Dónde aparece</th><th>Qué parchea</th></tr>
+          <tr><td><code>R_RISCV_32</code></td><td>Datos/punteros absolutos</td><td>Palabra de 32 bits con <code>S + A</code>.</td></tr>
+          <tr><td><code>R_RISCV_HI20</code></td><td><code>auipc/lui</code></td><td>20 bits altos (con redondeo para compensar <code>LO12</code> con signo).</td></tr>
+          <tr><td><code>R_RISCV_LO12_I</code></td><td><code>addi</code>/loads tipo I</td><td>12 bits bajos de la dirección efectiva.</td></tr>
+          <tr><td><code>R_RISCV_CALL</code> / <code>CALL_PLT</code></td><td>Pareja <code>auipc+jalr</code></td><td>Desplazamiento PC-relativo al símbolo destino.</td></tr>
+        </table></div>
+        <p class="small">Cualquier otro tipo de relocación provoca fallo de carga antes de ejecutar, para evitar trampas difíciles de depurar (<code>mcause</code> por salto/acceso inválido).</p>
+      </div>
+    </section>
+
+    <!-- APPS -->
+    <section id="apps" class="section">
+      <div class="card">
+        <h3>Sistema de aplicaciones (ELF en SD) y launcher</h3>
+        <div class="accent-line"></div>
+        <div class="grid cols-2">
+          <div>
+            <h4>Estructura en almacenamiento</h4>
+            <ul>
+              <li>Las apps se descubren/gestionan desde <code>/apps/</code> en la microSD (FAT).</li>
+              <li>Convención típica por app: <code>/apps/&lt;nombre&gt;/app.elf</code>, <code>/apps/&lt;nombre&gt;/app.txt</code>, iconos (<code>icon565.bin</code>, etc.).</li>
+              <li>El launcher (app ELF) escanea el catálogo, muestra UI y lanza apps creando un hilo que ejecuta <code>elf_run</code>.</li>
+              <li><code>system/appmgr.c</code> mantiene un registro cooperativo de apps/estado (foreground/background/closing, etc.) usado por launcher y apps.</li>
+            </ul>
+            <h4>Ejecución</h4>
+            <ul>
+              <li>Cada app corre en uno o más hilos del kernel; comparte espacio de direcciones (sin aislamiento MMU).</li>
+              <li>El <code>_start</code> de la app (<code>examples/p4-elfsdk/apps/lib/start.S</code>) recibe <code>argc/argv</code> y llama a <code>main</code>.</li>
+              <li><code>exit()</code> de la app se resuelve al mecanismo del cargador/kernel para terminar la hebra y liberar recursos asociados a la imagen.</li>
+            </ul>
+          </div>
+          <div>
+            <h4>SDK de apps (<code>examples/p4-elfsdk/</code>)</h4>
+            <ul>
+              <li><strong><code>apps/lib/start.S</code>:</strong> punto de entrada estándar de la app ELF.</li>
+              <li><strong><code>apps/lib/gestos.*</code>:</strong> capa de entrada/UI (eventos, botones, gestos) sobre LVGL; cola de eventos SPSC consumida por la hebra de la app.</li>
+              <li><strong><code>apps/lib/estado.*</code>:</strong> utilidades de estado/barra superior y helpers comunes.</li>
+              <li><strong>Apps ejemplo:</strong> <code>ejemplo</code>, <code>snake</code>, <code>flappy</code>, <code>tictac</code>, <code>tetris</code>, <code>musica</code>, <code>photos</code>, <code>grabador</code>, <code>settings</code>, <code>calculadora</code>, <code>tareas</code>, <code>launcher</code>, etc.</li>
+            </ul>
+            <div class="callout"><strong>Regla LVGL en apps:</strong> no llames a la API de LVGL desde callbacks que ya corren bajo el contexto de LVGL si el lock no es reentrante; usa el patrón de encolar eventos y procesarlos en el bucle principal con el bloqueo correcto. La hebra residente <code>lvglui</code> se encarga del refresco/timers.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Cómo crear una app desde cero (paso a paso)</h3>
+        <div data-tabs>
+          <div class="tabs">
+            <button class="tab-btn active" data-tab="a1">1. Estructura</button>
+            <button class="tab-btn" data-tab="a2">2. Código mínimo</button>
+            <button class="tab-btn" data-tab="a3">3. Makefile y flags</button>
+            <button class="tab-btn" data-tab="a4">4. Compilar y desplegar</button>
+          </div>
+          <div class="tab-panel active" data-tab="a1">
+            <p>Crea una carpeta en <code>examples/p4-elfsdk/apps/miapp/</code> con:</p>
+            <ul>
+              <li><code>miapp.c</code> — lógica de la app (<code>main</code>).</li>
+              <li><code>Makefile</code> — compila y enlaza con <code>ld -r</code> contra <code>../lib/start.o</code> (y <code>gestos.o</code>/<code>estado.o</code> si los usas).</li>
+              <li>En la SD (runtime): <code>/apps/miapp/app.elf</code> y opcionalmente <code>/apps/miapp/app.txt</code> + iconos para que el launcher la muestre.</li>
+            </ul>
+          </div>
+          <div class="tab-panel" data-tab="a2">
+<pre><code>#include &lt;stdio.h&gt;
+#include &lt;kernel.h&gt;
+#include &lt;timer.h&gt;
+#include "gestos.h"
+
+void exit(int codigo);
+
+int main(int argc, char *argv[]) {
+    ui_input_t *ui = ui_create();
+    ui_event_t ev;
+    if (!ui) exit(1);
+
+    ui_set_title(ui, "Mi App");
+    ui_button(ui, 1, "Salir", 95, 400, 130, 50, 0xE8453C);
+
+    for (;;) {
+        if (ui_poll(ui, &amp;ev)) {
+            if (ev.tipo == UI_EVENT_BUTTON &amp;&amp; ev.id == 1) {
+                ui_destroy(ui);
+                exit(0);
+            }
+        }
+        sleep(50);
+    }
+}</code></pre>
+          </div>
+          <div class="tab-panel" data-tab="a3">
+            <p>Usa las banderas compatibles con el cargador/ABI del port (ejemplo simplificado, similar a las apps del SDK):</p>
+<pre><code>TOPDIR = ../../../..
+CC = riscv32-unknown-elf-gcc
+LD = riscv32-unknown-elf-ld
+CFLAGS = -Os -fno-builtin -fno-pic -ffunction-sections -std=gnu11 \
+  -march=rv32imaf_zicsr_zifencei -mabi=ilp32f -mno-relax \
+  -msmall-data-limit=0 -Wall \
+  -I$(TOPDIR) -I$(TOPDIR)/include -I$(TOPDIR)/lvgl -I$(TOPDIR)/fatfs \
+  -I$(TOPDIR)/system/platforms/esp32p4 -I../lib
+
+OBJS = miapp.o ../lib/gestos.o ../lib/start.o
+miapp.elf: $(OBJS)
+	$(LD) -r -o $@ $(OBJS)</code></pre>
+            <ul class="small">
+              <li><code>-march</code> sin extensiones comprimidas conflictivas para el parcheo esperado y <code>-mno-relax</code> evitan relajaciones que rompen relocaciones.</li>
+              <li><code>-msmall-data-limit=0</code> y <code>-fno-pic</code> ayudan a evitar relocaciones/modos no soportados por el cargador.</li>
+              <li><code>-ffunction-sections</code> genera secciones por función (útil con <code>ld -r</code> y el flujo de carga).</li>
+            </ul>
+          </div>
+          <div class="tab-panel" data-tab="a4">
+<pre><code># Compilar
+cd examples/p4-elfsdk/apps
+make -C miapp clean all
+
+# Subir a la SD (con httpd activo en la placa)
+curl -X POST "http://&lt;IP&gt;/api/mkdir?path=/apps/miapp"
+curl -X DELETE "http://&lt;IP&gt;/api/file?path=/apps/miapp/app.elf"; sleep 1
+curl -X PUT -T miapp/miapp.elf "http://&lt;IP&gt;/api/file?path=/apps/miapp/app.elf"
+
+# Crear app.txt (nombre, exec, color, etc.)
+cat &gt; /tmp/app.txt &lt;&lt;'TXT'
+name=Mi App
+exec=/apps/miapp/app.elf
+color=0x2A1E10
+TXT
+curl -X PUT -T /tmp/app.txt "http://&lt;IP&gt;/api/file?path=/apps/miapp/app.txt"</code></pre>
+            <p class="small">También puedes copiar los ficheros directamente a la SD desde el PC. El launcher los detectará según su lógica de escaneo (<code>/apps/*/app.txt</code>).</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- GRAFICOS -->
+    <section id="graficos" class="section">
+      <div class="card">
+        <h3>Pila gráfica: LCD, Touch y LVGL</h3>
+        <div class="accent-line"></div>
+        <div class="grid cols-2">
+          <div>
+            <h4>Drivers de hardware</h4>
+            <ul>
+              <li><strong>LCD ST7796 (SPI2):</strong> <code>device/lcd-esp32p4/</code>. Inicializa controlador SPI/panel, expone primitivas y control (<code>LCD_CTRL_BLIT</code>, orientación, backlight, etc.).</li>
+              <li><strong>Touch FT6336 (I2C0):</strong> <code>device/touch/</code>. Lectura de puntos táctiles por sondeo/control.</li>
+              <li><strong>Buses compartidos:</strong> I2C0 es compartido por touch, audio (ES8311) y PMIC (AXP2101); SDMMC es compartido entre microSD (slot 0) y C6/SDIO (slot 1) con sincronización en kernel.</li>
+            </ul>
+            <h4>Puerto LVGL (<code>device/lvgl/lvglport.c</code>)</h4>
+            <ul>
+              <li>Inicializa LVGL, reserva buffers de dibujo en PSRAM, registra display (flush a LCD) e input (touch) y crea la hebra residente <code>lvglui</code>.</li>
+              <li><code>lvglui</code> avanza el tick y ejecuta <code>lv_timer_handler()</code> periódicamente, de modo que las apps no necesitan bombear LVGL manualmente.</li>
+              <li>Serialización con monitor/lock de LVGL (<code>lvgl_lock/lvgl_unlock</code>) porque la API no es reentrante.</li>
+              <li>Soporta idle/apagado de backlight, espejo de framebuffer para capturas y backend de ficheros (<code>S:/...</code>) sobre FAT.</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Arquitectura de UI</h4>
+            <div class="diagram">
+              <svg viewBox="0 0 520 360" xmlns="http://www.w3.org/2000/svg">
+                <rect x="30" y="20" width="460" height="50" rx="10" fill="#10243a" stroke="#39d0ff" stroke-opacity=".5"/>
+                <text x="260" y="50" text-anchor="middle" fill="#e6f1ff">Apps ELF (launcher, juegos, utilidades)</text>
+                <rect x="30" y="95" width="460" height="55" rx="10" fill="#10243a" stroke="#8b5cf6" stroke-opacity=".5"/>
+                <text x="260" y="120" text-anchor="middle" fill="#e6f1ff">Lib app: gestos/estado + API LVGL exportada</text>
+                <text x="260" y="140" text-anchor="middle" fill="#9bb0c9" font-size="12">eventos en cola, objetos/widgets, lvgl_lock()</text>
+                <rect x="30" y="175" width="460" height="55" rx="10" fill="#10243a" stroke="#00ffa3" stroke-opacity=".5"/>
+                <text x="260" y="200" text-anchor="middle" fill="#e6f1ff">LVGL core (kernel/lib vendorizada) + lvglui</text>
+                <text x="260" y="220" text-anchor="middle" fill="#9bb0c9" font-size="12">timers, layout, render, input indev</text>
+                <rect x="30" y="255" width="220" height="70" rx="10" fill="#10243a" stroke="#39d0ff" stroke-opacity=".4"/>
+                <text x="140" y="285" text-anchor="middle" fill="#e6f1ff">LCD driver</text>
+                <text x="140" y="305" text-anchor="middle" fill="#9bb0c9" font-size="12">flush/blit SPI2 ST7796</text>
+                <rect x="270" y="255" width="220" height="70" rx="10" fill="#10243a" stroke="#39d0ff" stroke-opacity=".4"/>
+                <text x="380" y="285" text-anchor="middle" fill="#e6f1ff">Touch driver</text>
+                <text x="380" y="305" text-anchor="middle" fill="#9bb0c9" font-size="12">FT6336 I2C0</text>
+              </svg>
+            </div>
+            <div class="callout warn"><strong>Concurrencia:</strong> las apps pueden correr en otro núcleo, pero el acceso a LVGL debe serializarse. El lock no es recursivo: no llames funciones que tomen el lock desde callbacks LVGL que ya lo poseen.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Consejos para rendimiento y estabilidad gráfica</h3>
+        <ul>
+          <li>Minimiza el trabajo dentro de secciones críticas con <code>lvgl_lock</code>; prepara datos fuera y aplica cambios de UI en ráfagas cortas.</li>
+          <li>En bucles de juego/animación, usa <code>sleep()</code> apropiado para ceder CPU (especialmente en SMP) y evita repintados completos innecesarios.</li>
+          <li>Gestiona correctamente el ciclo de vida: al pasar a background/closing, oculta o destruye objetos y detén hilos auxiliares para no dejar referencias colgadas.</li>
+          <li>Ten en cuenta la afinidad: colocar todas las apps en el mismo núcleo que <code>lvglui</code> o que los servicios de red puede generar contención distinta; mide con tu carga real.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- COMO USAR / MODIFICAR -->
+    <section id="como-usar" class="section">
+      <div class="card">
+        <h3>Cómo usar, depurar y modificar el kernel</h3>
+        <div class="accent-line"></div>
+        <div class="grid cols-2">
+          <div>
+            <h4>Flujo de trabajo típico</h4>
+            <ol>
+              <li>Modifica código (kernel/driver/app) manteniendo estilo y restricciones del port.</li>
+              <li>Recompila: <code>make -j4</code> en <code>compile/</code> (kernel) o <code>make -C &lt;app&gt;</code> (apps). Usa <code>make clean</code> si cambias headers/config/linker.</li>
+              <li>Flashea kernel (<code>flashxinu</code>) y/o actualiza ELFs en SD (copiado directo o vía HTTP API <code>/api/file</code>).</li>
+              <li>Prueba por consola serie (<code>/dev/ttyACM0 115200</code>): <code>ps</code>, <code>mem</code>, <code>elf</code>, comandos de red/audio, etc.</li>
+              <li>Ante trap/pánico: registra <code>mcause/mepc/mtval/ra</code>, simboliza con <code>addr2line -f -e compile/xinu.elf</code> o herramientas de ELF si la dirección pertenece a una app.</li>
+            </ol>
+            <h4>Puntos de extensión comunes</h4>
+            <ul>
+              <li><strong>Nuevo driver:</strong> añadir en <code>device/</code>, registrarlo en <code>xinu.conf</code>/<code>platformVars</code> y en el build.</li>
+              <li><strong>Nueva syscall/función exportada:</strong> implementar en <code>system/</code> o driver y exponerla en <code>system/exports.c</code> (+ header) si las apps deben usarla.</li>
+              <li><strong>Nueva política SMP:</strong> ajustar afinidad en creación de hilos/servicios, revisar contención de locks y ubicación de tareas críticas.</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Depuración práctica</h4>
+            <ul>
+              <li><code>ps</code>: estado de hilos, núcleo, prioridad, uso de pila (útil para fugas/sizing).</li>
+              <li><code>mem</code>: estado de heaps (L2MEM/PSRAM) y fragmentación/bloques libres.</li>
+              <li>Logs del cargador ELF: número de secciones, relocaciones/parches y dirección de <code>_start</code>.</li>
+              <li>Trampas: revisar si el fallo es en kernel (<code>0x40...</code>) o en app/PSRAM (<code>0x88...</code>/rango ELF) para acotar causa.</li>
+              <li>Pantalla de crash del kernel (si está habilitada en este build): muestra causa/PC/mtval/registros y permite reinicio.</li>
+            </ul>
+            <div class="callout danger"><strong>Precaución:</strong> en un entorno sin protección de memoria, un cambio incorrecto en punteros, DMA, caché o locks puede corromper estado global y manifestarse lejos del origen. Cambia de forma incremental y valida con pruebas cortas.</div>
+            <h4>Documentos y fuentes de referencia en el árbol</h4>
+            <ul class="small">
+              <li><code>AGENTS.md</code>, <code>README_CORE1.md</code>, <code>README_WIFI_SDIO.md</code>, <code>gui.md</code></li>
+              <li><code>docs/manual/</code>, <code>docs/port-esp32p4/</code>, <code>docs/subir-archivos-httpd.md</code></li>
+              <li>Cabeceras en <code>include/</code> (contratos de API) y fuentes en <code>system/</code>/<code>device/</code> (comportamiento real)</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h3>Lista de verificación para cambios seguros</h3>
+        <ul>
+          <li>¿El cambio respeta afinidad/locking SMP y no introduce espera bloqueante en rutas críticas?</li>
+          <li>¿Las reservas en PSRAM/L2MEM se liberan en todos los caminos (éxito/error/salida de app)?</li>
+          <li>¿Si hay DMA o acceso directo a memoria, se respetan alineaciones y coherencia de caché?</li>
+          <li>¿Las apps nuevas usan solo símbolos exportados y relocaciones soportadas por el cargador?</li>
+          <li>¿Se recompilaron/subieron todos los artefactos afectados (kernel, libs compartidas, ELFs en SD)?</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- GALERIA -->
+    <section id="galeria" class="section">
+      <div class="card">
+        <h3>Galería del proyecto</h3>
+        <div class="accent-line"></div>
+        <p>Espacio para fotografías del hardware, capturas de pantalla, diagramas propios y evidencias de pruebas. La galería se carga desde <code>gallery.json</code> y las imágenes se guardan en <code>docs/kernel/gallery/</code>.</p>
+        <div class="callout ok">
+          <strong>Cómo agregar tus imágenes:</strong>
+          <ol>
+            <li>Copia tus archivos (jpg/png/webp/gif/svg) en <code>docs/kernel/gallery/</code>.</li>
+            <li>Edita <code>docs/kernel/gallery.json</code> y añade objetos con <code>src</code>, <code>title</code> y <code>desc</code>.</li>
+            <li>Recarga esta página (si la abres desde disco, sirve con <code>python3 -m http.server</code> dentro de <code>docs/kernel/</code> para que el navegador pueda leer el JSON).</li>
+          </ol>
+        </div>
+        <p id="gallery-status" class="small muted">Cargando galería...</p>
+        <div id="gallery-grid" class="gallery-grid mt"></div>
+      </div>
+
+      <div class="card mt">
+        <h3>Sugerencias de contenido para la galería</h3>
+        <div class="grid cols-3">
+          <div class="card"><h4>Hardware</h4><p>Placa ESP32-P4, pantalla, conexiones SD/UART, montaje del prototipo.</p></div>
+          <div class="card"><h4>Ejecución</h4><p>Boot log, launcher, apps corriendo, capturas de <code>ps/mem</code>, pantalla de crash.</p></div>
+          <div class="card"><h4>Diagnóstico</h4><p>Pruebas de WiFi/audio/touch, comparativas de rendimiento, secuencias de depuración.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="footer-note">Documentación generada para el árbol <code>xinu-p4-smp</code> (ESP32-P4, baremetal, SMP). Complementa esta guía con el código fuente y los documentos existentes en <code>docs/</code> y <code>AGENTS.md</code> para detalles específicos de evolución y estado.</p>
+  </main>
+</div>
+<script>
+window.__GALLERY_DATA__ = [{"src": "gallery/placeholder-board.svg", "title": "ESP32-P4 (ejemplo)", "desc": "Reemplaza esta entrada por tus fotos. Añade imágenes en docs/kernel/gallery/ y actualiza este JSON."}];
+(function () {
+  const navLinks = Array.from(document.querySelectorAll('.nav a[data-section]'));
+  const sections = Array.from(document.querySelectorAll('.section'));
+
+  function showSection(id, pushHash) {
+    const target = document.getElementById(id) ? id : 'inicio';
+    sections.forEach(s => s.classList.toggle('active', s.id === target));
+    navLinks.forEach(a => a.classList.toggle('active', a.dataset.section === target));
+    if (pushHash) {
+      history.replaceState(null, '', '#' + target);
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  navLinks.forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      showSection(a.dataset.section, true);
+    });
+  });
+
+  // Tabs within cards
+  document.querySelectorAll('[data-tabs]').forEach(group => {
+    const buttons = Array.from(group.querySelectorAll('.tab-btn'));
+    const panels = Array.from(group.querySelectorAll('.tab-panel'));
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const name = btn.dataset.tab;
+        buttons.forEach(b => b.classList.toggle('active', b === btn));
+        panels.forEach(p => p.classList.toggle('active', p.dataset.tab === name));
+      });
+    });
+  });
+
+  // Simple in-page jump links
+  document.querySelectorAll('a[data-jump]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      showSection(a.dataset.jump, true);
+    });
+  });
+
+  // Gallery loader (usa datos embebidos; intenta actualizar desde gallery.json si el servidor lo permite)
+  function renderGallery(items, source) {
+    const grid = document.getElementById('gallery-grid');
+    const status = document.getElementById('gallery-status');
+    if (!grid) return;
+    if (!Array.isArray(items) || items.length === 0) {
+      status.textContent = 'No hay imágenes en gallery.json. Añade entradas para mostrarlas.';
+      return;
+    }
+    grid.innerHTML = '';
+    items.forEach(item => {
+      const card = document.createElement('div');
+      card.className = 'gallery-item';
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.alt = item.title || 'Imagen de galería';
+      img.src = item.src;
+      img.onerror = () => { img.alt = 'No se pudo cargar: ' + item.src; };
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const title = document.createElement('div');
+      title.className = 'title';
+      title.textContent = item.title || 'Sin título';
+      const desc = document.createElement('div');
+      desc.className = 'desc';
+      desc.textContent = item.desc || '';
+      meta.appendChild(title);
+      meta.appendChild(desc);
+      card.appendChild(img);
+      card.appendChild(meta);
+      grid.appendChild(card);
+    });
+    status.textContent = 'Mostrando ' + items.length + ' elemento(s)' + (source ? ' (' + source + ')' : '') + '.';
+  }
+
+  async function loadGallery() {
+    if (Array.isArray(window.__GALLERY_DATA__)) {
+      renderGallery(window.__GALLERY_DATA__, 'datos embebidos');
+    }
+    try {
+      const res = await fetch('gallery.json', { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const items = await res.json();
+      if (Array.isArray(items)) renderGallery(items, 'gallery.json');
+    } catch (err) {
+      // En el httpd del ESP32 (secuencial) o en modo local puede fallar; los datos embebidos ya se mostraron.
+      if (!Array.isArray(window.__GALLERY_DATA__)) {
+        const status = document.getElementById('gallery-status');
+        if (status) status.textContent = 'No se pudo cargar gallery.json (' + err.message + ').';
+      }
+    }
+  }
+
+  // Initial route
+  const hash = (location.hash || '#inicio').replace('#', '');
+  showSection(hash, false);
+  window.addEventListener('hashchange', () => {
+    const h = (location.hash || '#inicio').replace('#', '');
+    showSection(h, false);
+  });
+
+  loadGallery();
+})();
+</script>
+</body>
+</html>

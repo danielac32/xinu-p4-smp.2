@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#10243a"/>
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#g)"/>
+  <rect x="120" y="90" width="560" height="270" rx="18" fill="#0f1b2d" stroke="#2ef2ff" stroke-opacity="0.4"/>
+  <rect x="170" y="140" width="180" height="120" rx="10" fill="#12263a" stroke="#7c5cff" stroke-opacity="0.5"/>
+  <circle cx="520" cy="170" r="26" fill="#1a2f45" stroke="#2ef2ff" stroke-opacity="0.5"/>
+  <circle cx="590" cy="170" r="26" fill="#1a2f45" stroke="#2ef2ff" stroke-opacity="0.5"/>
+  <rect x="470" y="230" width="170" height="70" rx="8" fill="#091523" stroke="#2ef2ff" stroke-opacity="0.3"/>
+  <text x="400" y="390" text-anchor="middle" fill="#9fb3c8" font-family="Arial, sans-serif" font-size="28">Galería: agrega tus fotos en docs/kernel/gallery/</text>
+  <text x="260" y="210" text-anchor="middle" fill="#cfe8ff" font-family="Arial, sans-serif" font-size="22">ESP32-P4</text>
+</svg>

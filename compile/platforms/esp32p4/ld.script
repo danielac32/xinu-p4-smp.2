@@ -1,0 +1,367 @@
+/**
+ * @file ld.script
+ *
+ * Linker script for Embedded Xinu on the ESP32-P4 (Waveshare
+ * ESP32-P4-WIFI6-Touch-LCD-3.5).
+ *
+ * The SBL (boot loader) sets up the MMU, the cache and the PSRAM, then
+ * jumps to __kernel_entry_point (0x40005000) in flash.  From there the
+ * kernel runs XiP and copies its .data into the internal L2MEM.
+ *
+ * Memory regions (from the SDK's Memory_Map.ld):
+ *   FLASH(rx)     0x40005000, 31M   -> code + rodata (XiP)
+ *   PSRAM(rwx)    0x48000000, 32M-32K -> shared engine pages, then free heap;
+ *                                  ends en 0x49FF8000, donde empieza la RAM
+ *                                  de los 32K que ulp.ld reserva al core LP
+ *   HP_L2MEM(rwx) 0x4FF00000, 768K  -> kernel RAM (stack, data, bss)
+ *   LP_SRAM       0x50108000, 32K   -> low-power SRAM
+ *
+ * The P4 MMU has no permission bits (only "valid" + "flash/PSRAM"): all
+ * three regions are RWX, and PSRAM is executable.
+ */
+/* Embedded Xinu, Copyright (C) 2018.  All rights reserved. */
+
+ENTRY(_start)
+
+MEMORY
+{
+    FLASH(rx)     : ORIGIN = 0x40005000, LENGTH = 31M
+    /* El PSRAM acaba en 0x4A000000; los ultimos 32K (0x49FF8000..) son la RAM
+     * del core LP, fijada en machine/ulp/ulp.ld.  LENGTH manda, porque
+     * _psram_free_end = ORIGIN(RAM)+LENGTH(RAM): 32M-32K deja el pool del
+     * kernel en 0x49FF8000 justo delante del hueco del LP. */
+    RAM(rwx)      : ORIGIN = 0x48000000, LENGTH = 32M-32K
+    HP_L2MEM(rwx) : ORIGIN = 0x4FF00000, LENGTH = 768K
+    LP_SRAM(rwx)  : ORIGIN = 0x50108000, LENGTH = 32K
+}
+
+/* Peripherals reached through the SDK's struct-mapped headers, copied verbatim
+ * from esp32-riscv-bare-metal-sdk-main into include/soc.  Those headers declare
+ * each block as an object ("extern sdmmc_dev_t SDMMC;") and the SDK resolves
+ * them exactly this way in core/soc/esp32p4/ld/esp32p4.peripherals.ld.  Same
+ * addresses, same trick: PROVIDE binds the symbol to the base of the block, so
+ * &SDMMC is that base and the headers compile unchanged. */
+PROVIDE ( SDMMC             = 0x50083000 );
+PROVIDE ( CACHE             = 0x3FF10000 );
+PROVIDE ( HP_SYS_CLKRST     = 0x500E6000 );
+PROVIDE ( LP_AON_CLKRST     = 0x50111000 );
+PROVIDE ( PMU               = 0x50115000 );
+PROVIDE ( GPIO              = 0x500E0000 );
+PROVIDE ( IO_MUX            = 0x500E1000 );
+PROVIDE ( HP_SYSTEM         = 0x500E5000 );
+PROVIDE ( LP_SYS            = 0x50110000 );
+PROVIDE ( LP_IOMUX          = 0x5012B000 );
+PROVIDE ( USB_SERIAL_JTAG   = 0x500D2000 );
+PROVIDE ( USB_WRAP          = 0x50080000 );
+
+/* The two ROM pad-router helpers the esp_hosted driver calls.  The SDK binds
+ * these names to the boot ROM (core/esp_rom/esp32p4/ld/esp32p4.rom.api.ld:
+ * "PROVIDE ( esp_rom_gpio_connect_out_signal = gpio_matrix_out )").  Same
+ * binding, but pointed at Xinu's own implementation in device/gpio: it does
+ * the identical GPIO-matrix writes and is what W1 proved on this board. */
+PROVIDE ( esp_rom_gpio_connect_out_signal = gpio_matrix_out );
+PROVIDE ( esp_rom_gpio_connect_in_signal  = gpio_matrix_in  );
+
+/* ---- el runtime del compilador es el mask ROM ----------------------
+ * El P4 no tiene doble precision: la prueba esta en placa.  `java FloatTest'
+ * saltaba con mcause=2 (instruccion ilegal), mepc=0x4000539a y
+ * mtval=0x7a07b787 --que es, palabra por palabra, el `fld' (cargar doble) con
+ * el que libgcc.a implementa __fixunsdfsi en esta multilib.  El core levanta
+ * trap hasta con las instrucciones D; las de simple precision si las ejecuta
+ * (mstatus.FS llegaba a 3, FPU activada).
+ *
+ * Las extensiones si que conviven con el RVC: el propio __ashldi3 que arrastra
+ * libgcc (sll/or/mv de 16 bits) lo ejecuta a diario la capa de control
+ * esp_hosted con la WiFi funcionando, y el cuerpo al que salta el ROM para
+ * ets_clk_get_xtal_freq --que llama el SBL en cada arranque-- empieza con un
+ * `li a5' comprimido (0x47fd).  Es decir: el -march=rv32imafc del build es
+ * conservador con 'c', pero el D del libgcc no existe.
+ *
+ * La solucion no es escribir las rutinas, es NO enlazarlas del toolchain:
+ * Espressif compila el mismo libgcc dentro del ROM (core/esp_rom/esp32p4/ld/
+ * esp32p4.rom.eco5.libgcc.ld, valido para "ECO >= 5"; el ECO de ESTA placa
+ * esta medido con `memdump -f' sobre el kernel corriendo: _rom_eco_version
+ * 0x4fc00014 = 7 y _rom_chip_id 0x4fc00010 = 0x12) y por eso aqui se replican
+ * TODAS sus direcciones y platformVars deja -lgcc fuera del enlace.  Con
+ * -lgcc dentro no basta con aliasar: PROVIDE no impide que ld abra el archivo
+ * y su definicion fuerte pisa el alias --asi se col6 __divdf3 en flash pese a
+ * estar aliasado.  Sin libgcc, cualquier hueco que quede se ve como
+ * "undefined reference" en el enlace, no como un trap a 20 segundos de
+ * distancia en la placa.
+ *
+ * El ROM expone el grupo como una tabla de trampolines: cada entrada es un
+ * `jal x0' de 4 bytes a 0x4fc13xxx/0x4fc16xxx, donde esta el cuerpo de
+ * software (comprobado: desde 0x4fc00738 salta a 0x4fc1645a, y desde
+ * 0x4fc00778 a 0x4fc16d24).  Coste en la imagen: 0 bytes.
+ *
+ * Unica excepcion: __truncdfsf2 (doble->simple) no esta en el ROM ni en el
+ * libgcc; esa si se escribe, en lib/libxc/compiler_rt.c. */
+PROVIDE ( __absvdi2       = 0x4fc00730 );
+PROVIDE ( __absvsi2       = 0x4fc00734 );
+PROVIDE ( __adddf3        = 0x4fc00738 );  /**< a+b                 */
+PROVIDE ( __addvdi3       = 0x4fc0073c );
+PROVIDE ( __addvsi3       = 0x4fc00740 );
+PROVIDE ( __ashldi3       = 0x4fc00744 );  /**< << 64 bits          */
+PROVIDE ( __ashrdi3       = 0x4fc00748 );  /**< >> arit. 64 bits    */
+PROVIDE ( __bswapdi2      = 0x4fc0074c );
+PROVIDE ( __bswapsi2      = 0x4fc00750 );
+PROVIDE ( __clear_cache   = 0x4fc00754 );
+PROVIDE ( __clrsbdi2      = 0x4fc00758 );
+PROVIDE ( __clrsbsi2      = 0x4fc0075c );
+PROVIDE ( __clzdi2        = 0x4fc00760 );
+PROVIDE ( __clzsi2        = 0x4fc00764 );
+PROVIDE ( __cmpdi2        = 0x4fc00768 );
+PROVIDE ( __ctzdi2        = 0x4fc0076c );
+PROVIDE ( __ctzsi2        = 0x4fc00770 );
+PROVIDE ( __divdc3        = 0x4fc00774 );
+PROVIDE ( __divdf3        = 0x4fc00778 );  /**< a/b                 */
+PROVIDE ( __divdi3        = 0x4fc0077c );
+PROVIDE ( __divsc3        = 0x4fc00780 );
+PROVIDE ( __divsi3        = 0x4fc00784 );
+PROVIDE ( __eqdf2         = 0x4fc00788 );  /**< == -> -1/0/1        */
+PROVIDE ( __extendsfdf2   = 0x4fc0078c );  /**< (double)float       */
+PROVIDE ( __ffsdi2        = 0x4fc00790 );
+PROVIDE ( __ffssi2        = 0x4fc00794 );
+PROVIDE ( __fixdfdi       = 0x4fc00798 );  /**< (long long)double   */
+PROVIDE ( __fixdfsi       = 0x4fc0079c );  /**< (int)double         */
+PROVIDE ( __fixsfdi       = 0x4fc007a0 );
+PROVIDE ( __fixunsdfsi    = 0x4fc007a4 );  /**< (unsigned)double    */
+PROVIDE ( __fixunssfdi    = 0x4fc007a8 );
+PROVIDE ( __fixunssfsi    = 0x4fc007ac );
+PROVIDE ( __floatdidf     = 0x4fc007b0 );  /**< (double)long long   */
+PROVIDE ( __floatdisf     = 0x4fc007b4 );
+PROVIDE ( __floatsidf     = 0x4fc007b8 );  /**< (double)int         */
+PROVIDE ( __floatundidf   = 0x4fc007bc );
+PROVIDE ( __floatundisf   = 0x4fc007c0 );
+PROVIDE ( __floatunsidf   = 0x4fc007c4 );  /**< (double)unsigned    */
+PROVIDE ( __gcc_bcmp      = 0x4fc007c8 );
+PROVIDE ( __gedf2         = 0x4fc007cc );  /**< >=                  */
+PROVIDE ( __gtdf2         = 0x4fc007d0 );  /**< >                   */
+PROVIDE ( __ledf2         = 0x4fc007d4 );  /**< <=                  */
+PROVIDE ( __lshrdi3       = 0x4fc007d8 );  /**< >> logico 64 bits   */
+PROVIDE ( __ltdf2         = 0x4fc007dc );  /**< <                   */
+PROVIDE ( __moddi3        = 0x4fc007e0 );
+PROVIDE ( __modsi3        = 0x4fc007e4 );
+PROVIDE ( __muldc3        = 0x4fc007e8 );
+PROVIDE ( __muldf3        = 0x4fc007ec );  /**< a*b                 */
+PROVIDE ( __muldi3        = 0x4fc007f0 );
+PROVIDE ( __mulsc3        = 0x4fc007f4 );
+PROVIDE ( __mulsi3        = 0x4fc007f8 );
+PROVIDE ( __mulvdi3       = 0x4fc007fc );
+PROVIDE ( __mulvsi3       = 0x4fc00800 );
+PROVIDE ( __nedf2         = 0x4fc00804 );  /**< !=                  */
+PROVIDE ( __negdf2        = 0x4fc00808 );  /**< -a                  */
+PROVIDE ( __negdi2        = 0x4fc0080c );
+PROVIDE ( __negvdi2       = 0x4fc00810 );
+PROVIDE ( __negvsi2       = 0x4fc00814 );
+PROVIDE ( __paritysi2     = 0x4fc00818 );
+PROVIDE ( __popcountdi2   = 0x4fc0081c );
+PROVIDE ( __popcountsi2   = 0x4fc00820 );
+PROVIDE ( __powidf2       = 0x4fc00824 );
+PROVIDE ( __subdf3        = 0x4fc00828 );  /**< a-b                 */
+PROVIDE ( __subvdi3       = 0x4fc0082c );
+PROVIDE ( __subvsi3       = 0x4fc00830 );
+PROVIDE ( __ucmpdi2       = 0x4fc00834 );
+PROVIDE ( __udivdi3       = 0x4fc00838 );
+PROVIDE ( __udivmoddi4    = 0x4fc0083c );
+PROVIDE ( __udivsi3       = 0x4fc00840 );
+PROVIDE ( __udiv_w_sdiv   = 0x4fc00844 );
+PROVIDE ( __umoddi3       = 0x4fc00848 );
+PROVIDE ( __umodsi3       = 0x4fc0084c );
+PROVIDE ( __unorddf2      = 0x4fc00850 );  /**< NaN / ambos NaN     */
+PROVIDE ( __extenddftf2   = 0x4fc00854 );
+PROVIDE ( __trunctfdf2    = 0x4fc00858 );
+
+SECTIONS
+{
+    /* ---- flash (XiP) ------------------------------------------------ */
+    .init : ALIGN(4)
+    {
+        KEEP(*(.init))
+        KEEP(*(.init.*))
+    } > FLASH
+
+    .text : ALIGN(4)
+    {
+        _text = .;
+        *(.text)
+        *(.text.*)
+        . = ALIGN(4);
+    } > FLASH
+
+    .rodata : ALIGN(4)
+    {
+        *(.rodata)
+        *(.rodata.*)
+        *(.srodata)
+        *(.srodata.*)
+        . = ALIGN(4);
+    } > FLASH
+
+    .ctors : ALIGN(4)
+    {
+        __CTOR_LIST__ = .;
+        KEEP (*(SORT(.ctors.*)))
+        KEEP (*(.ctors))
+        KEEP (*(SORT(.init_array.*)))
+        KEEP (*(.init_array))
+        LONG(-1);
+        . = ALIGN(4);
+    } > FLASH
+
+    _etext = .;
+
+    /* ---- audio pages (PSRAM, direct-accessed) ------------------------- */
+    /* La cadena de descriptores y el anillo de muestras que el AHB-DMA lee
+     * para llenar el FIFO TX del I2S0.  Mismo reparto que las paginas del SD:
+     * el CPU las escribe por el acceso directo 0x88...... y el motor recibe la
+     * forma 0x48......, que es la que el entiende y la unica que cae dentro de
+     * su ventana (0x40000000..0x4FFC0000).  Una pagina para los descriptores
+     * y dos para las muestras: 8192 bytes = 2048 frames de 4 bytes = 42,7 ms
+     * de audio a 48 kHz, que es el anillo maximo.
+     *
+     * Van antes de .sdshare porque _psram_free_start se define a partir de
+     * _sd_block_page: asi el heap de PSRAM siempre arranca por encima de las
+     * dos secciones, sean cual sea sus tamanos.
+     *
+     * Las cuatro paginas siguientes son las dos parejas que comparten el motor
+     * por el otro camino: el anillo con el que se reproducen ficheros (el DMA
+     * lee) y el de la captura (el DMA escribe).  No salen del heap de PSRAM por
+     * lo mismo que las de arriba y las del SD: una peticion de malloc deja su
+     * cabecera en la misma linea de cache (128 bytes) que el principio de la
+     * lista, y entonces el CPU publica los descriptores por 0x88 mientras el
+     * motor los lee por una linea rancia de 0x48; cuando esa linea se expulsa,
+     * la imagen vieja pisa lo que ya se habia escrito.  Medido en placa en la
+     * E4d: la lista acababa llena de muestras y el motor se aparcaba con un
+     * descriptor rechazado.  Con la pagina aparte nadie toca esa linea por la
+     * via con cache, asi que no hay nada que mantenga el cache. */
+    .audioshare (NOLOAD) : ALIGN(4096)
+    {
+        _audio_desc_page = .;
+        . = . + 4096;
+        _audio_buf_page = .;
+        . = . + 8192;
+
+        /* Anillo de reproduccion: 32 trozos de 2048 bytes (STREAM_RING_BYTES). */
+        _audio_stream_desc_page = .;
+        . = . + 4096;
+        _audio_stream_buf_page = .;
+        . = . + 65536;
+
+        /* Anillo de captura: 32 trozos de 2048 bytes, los mismos que cierra un
+         * fin de recepcion del I2S (IN_CHUNK_BYTES). */
+        _audio_in_desc_page = .;
+        . = . + 4096;
+        _audio_in_buf_page = .;
+        . = . + 65536;
+    } > RAM
+
+    /* ---- accelerator pages (PSRAM, direct-accessed) ------------------ */
+    /* Two pages the SD block engine shares with the CPU: the first holds its
+     * DMA descriptor, the second the block in transit.  They live in PSRAM
+     * because the chip has a documented CPU path to external RAM that skips
+     * the cache (0x88..., see sdHw.c), so CPU and engine meet on the same
+     * cells with no cache operation in between.  NOLOAD: no image bytes and
+     * the boot does not clear them; the driver writes both before use. */
+    .sdshare (NOLOAD) : ALIGN(4096)
+    {
+        _sd_desc_page = .;
+        . = . + 4096;
+        _sd_block_page = .;
+        . = . + 4096;
+    } > RAM
+
+    /* ---- internal L2MEM --------------------------------------------- */
+
+    /* Primer trozo de la ventana L2MEM, reservado y nunca usado: ahi NO hay
+     * celdas de RAM.  Medido en placa (2026-11-02, barrido de durabilidad cada
+     * 8 KB entre 0x4FF00040 y 0x4FF20040): por debajo de 0x4FF20000 una
+     * escritura con cache que se desaloja no vuelve (la lectura da 0) y el alias
+     * 0x8FF...... tampoco llega a ninguna celda; desde 0x4FF20000 hacia arriba
+     * la misma prueba devuelve el valor escrito por los dos caminos.  El hueco
+     * mide 128 KB, que es el tamano que declara CACHE_L2_CACHE_CACHESIZE_CONF
+     * (0x3FF10278 = 0x200), o sea que ese bloque del array esta consumido por la
+     * propia cache L2.  Lo que el kernel tenga aqui solo vive mientras la linea
+     * este residente: cualquier desalojo lo borra, y asi se pierden las tablas,
+     * el pwd del FAT o el estado de un driver.  Reservar 128 KB en vez de la
+     * pagina de 4 KB que antes bastaba cuesta memoria, pero deja .data, .bss y
+     * el heap de L2MEM encima del corte, en RAM de verdad. */
+    .l2reserve (NOLOAD) : ALIGN(4096)
+    {
+        _l2reserve = .;
+        . = . + 0x20000;
+    } > HP_L2MEM
+
+    /* CLIC hardware vector table (NOLOAD): filled at runtime by the
+     * interrupt controller before any line is unmasked.  aligned(64). */
+    .vectors (NOLOAD) : ALIGN(64)
+    {
+        KEEP(*(.vectors))
+        . = ALIGN(64);
+    } > HP_L2MEM
+
+    /* Initialized data: stored in flash, copied to L2MEM at boot */
+    .data : ALIGN(4)
+    {
+        _sdata = .;
+        _data_start = .;
+        *(.data)
+        *(.data.*)
+        . = ALIGN(4);
+        __global_pointer$ = . + 0x800;
+
+        *(.sdata)
+        *(.sdata.*)
+        _edata = .;
+        _data_end = .;
+    } > HP_L2MEM AT>FLASH
+
+    _data_loadaddr = LOADADDR(.data);
+
+    /* Uninitialized data: L2MEM only */
+    .bss : ALIGN(4)
+    {
+        _sbss = .;
+        _bss_start = .;
+        *(.bss)
+        *(.bss.*)
+        *(.sbss)
+        *(.sbss.*)
+        *(COMMON)
+        _ebss = .;
+        _bss_end = .;
+    } > HP_L2MEM
+
+    /* Stack del core1 (NOLOAD): la usa sólo el bucle de aparcado de
+     * loader/platforms/esp32p4/start.S.  Sección aparte, detrás de .bss y
+     * antes de _end, por dos motivos: el borrado de .bss que hace core0 no la
+     * toca (el core1 escribe su testigo ahí), y el heap de L2MEM arranca por
+     * encima, así que nunca se solapa con él. */
+    .core1stk (NOLOAD) : ALIGN(16)
+    {
+        _core1stk = .;
+        . = . + 8192;   /* 8 KB: resched/ctxsw + IRQ de timer + IPI anidada */
+        _core1stk_end = .;
+    } > HP_L2MEM
+
+    _end = .;
+
+    /* Free L2MEM: Xinu heap (thread stacks, buffers).  Starts right after
+     * the reserved regions above.  It stops well below the top of the
+     * region: the last 64 KB belong to the boot ROM, which keeps its cache
+     * dispatch table at 0x4FFBFFD8 and its boot stack at 0x4FFBCFC0
+     * (SOC_ROM_STACK_START_REV2).  Xinu hands out thread stacks from the
+     * top of the heap, so without this the first stack lands on the ROM's
+     * data and every ROM call that goes through the table dies. */
+    _l2mem_free_start = _end;
+    _l2mem_free_end   = 0x4FFB0000;
+
+    /* PSRAM: free from the end of the shared pages up. */
+    _psram_free_start = _sd_block_page + 4096;
+    _psram_free_end   = ORIGIN(RAM) + LENGTH(RAM);
+
+    /DISCARD/ : {
+        *(.comment .comment.* .note .note.*)
+        *(.eh_frame)
+    }
+}

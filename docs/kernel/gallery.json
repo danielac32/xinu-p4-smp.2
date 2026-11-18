@@ -1,0 +1,7 @@
+[
+  {
+    "src": "gallery/placeholder-board.svg",
+    "title": "ESP32-P4 (ejemplo)",
+    "desc": "Reemplaza esta entrada por tus fotos. Añade imágenes en docs/kernel/gallery/ y actualiza este JSON."
+  }
+]

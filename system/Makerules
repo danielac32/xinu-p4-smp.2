@@ -1,0 +1,77 @@
+# This Makefile contains rules to build files in the system/ directory.
+
+# Name of this component (the directory this file is stored in)
+COMP = system
+
+# Source files for this component
+
+# Important system components
+C_FILES = initialize.c queue.c
+
+# Files for process control
+C_FILES += create.c kill.c ready.c resched.c resume.c suspend.c chprio.c getprio.c queue.c getitem.c queinit.c insert.c gettid.c xdone.c yield.c userret.c
+
+# Files for system timer and preemption
+C_FILES += clkinit.c clkhandler.c mdelay.c udelay.c timershim.c insertd.c sleep.c unsleep.c wakeup.c
+
+# Files for semaphores
+C_FILES += semcreate.c semfree.c semcount.c signal.c signaln.c wait.c
+
+# Files for monitors
+C_FILES += moncreate.c monfree.c moncount.c lock.c unlock.c
+
+# Shared bus locks owned by the kernel (SDMMC controller: microSD + C6)
+C_FILES += sdmmcbus.c
+
+# Files for memory management
+C_FILES += memget.c memfree.c stkget.c psrammem.c bfpalloc.c bfpfree.c bufget.c buffree.c
+
+# Files for interprocess communication
+C_FILES += send.c receive.c recvclr.c recvtime.c mqueue.c
+
+# Files for device drivers
+C_FILES += close.c control.c getc.c open.c ioerr.c ionull.c read.c putc.c seek.c write.c getdev.c
+
+# Files for system debugging
+C_FILES += debug.c stack.c
+
+# Syscall table for the ecall gate (system/arch/riscv/trap.c)
+C_FILES += sysent.c  
+
+# Tabla de simbolos que el kernel regala a las apps ELF (include/exports.h).
+# Es obligatoriamente un componente del kernel, no de la shell: con
+# --gc-sections solo existe lo que alguien referencia, y las referencias de
+# exports.c son la raiz que mete en la imagen a suspend(), malloc(), fl_fopen()
+# y a las ~1.000 funciones de LVGL que aun no llama nadie.
+C_FILES += exports.c
+
+# Monitor de tareas para apps ELF (include/taskmon.h): una llamada por
+# refresco, sin reserva de memoria, expuesta por exports.c.
+C_FILES += taskmon.c
+
+# Cargador de apps ELF (include/elfload.h): coloca un ET_REL RV32 en PSRAM,
+# resuelve contra la tabla de arriba y salta a su '_start' con argc/argv.
+# Tambien del kernel: 'elf' (shell/xsh_elf.c) es el cliente, y el cargador
+# necesita a elf_exit() vivita para que 'exit' del app sea su trampa.
+C_FILES += elfload.c
+
+# Registro de apps (launcher <-> apps ELF): tabla fija y funciones exportadas.
+C_FILES += appmgr.c
+
+# Candado global del sistema de ficheros FAT/microSD.
+C_FILES += fslock.c
+
+# Reproductor MP3 (include/mp3.h): minimp3 embebido en el kernel, salida PCM
+# estereo a 48 kHz lista para escribir en /dev/audio0.  Va en el kernel y no
+# en la app porque el texto de una app ELF corre sin cache de instrucciones.
+C_FILES += mp3.c
+
+# Init system + servicios supervisados
+
+
+# Kernel configuration registry (JSON documents on the FAT volume)
+
+
+# Add the files to the compile source path
+DIR = ${TOPDIR}/${COMP}
+COMP_SRC += ${C_FILES:%=${DIR}/%}
